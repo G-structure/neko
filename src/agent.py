@@ -163,30 +163,43 @@ class Signaler:
         return json.loads(data)
 
 class FrameSaver:
+    """Continuously reads frames from a video track and keeps the latest image."""
+
     def __init__(self) -> None:
-        self.frame: Optional[VideoStreamTrack] = None
+        self.image: Optional[Image.Image] = None
+        self.task: Optional[asyncio.Task] = None
         self.lock = asyncio.Lock()
 
-    async def update(self, track:VideoStreamTrack) -> None:
-        async with self.lock:
-            self.frame = track
-            frames_received.inc()
-            logger.info(f"FrameSaver: Updated with new frame track {track}")
-            asyncio.create_task(self._probe_first_frame(track))
+    async def update(self, track: VideoStreamTrack) -> None:
+        await self.stop()
+        logger.info(f"FrameSaver: starting reader for track {track}")
+        self.task = asyncio.create_task(self._reader(track))
 
-    async def _probe_first_frame(self, track: VideoStreamTrack):
+    async def stop(self) -> None:
+        if self.task:
+            self.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.task
+            self.task = None
+        async with self.lock:
+            self.image = None
+
+    async def _reader(self, track: VideoStreamTrack) -> None:
         try:
-            logger.info("[HOT/COLD TEST] Probing first frame (timeout=10s)...")
-            frame = await asyncio.wait_for(track.recv(), timeout=10.0)
-            logger.info(f"[HOT/COLD TEST] First frame ARRIVED: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
-        except asyncio.TimeoutError:
-            logger.error("[HOT/COLD TEST] NO FRAME within 10s — video track may be cold or stuck.")
+            while True:
+                frame = await track.recv()
+                img = frame_to_pil_image(frame)
+                async with self.lock:
+                    self.image = img
+                frames_received.inc()
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.error(f"[HOT/COLD TEST] Unexpected error: {e}")
+            logger.error(f"Frame reader stopped: {e}")
 
-    async def get(self) -> Optional[VideoStreamTrack]:
+    async def get(self) -> Optional[Image.Image]:
         async with self.lock:
-            return self.frame
+            return self.image
 
 class NekoAgent:
     def __init__(self, model, processor, ws_url:str,
@@ -340,13 +353,11 @@ class NekoAgent:
         step = 0
         while not self.shutdown.is_set() and step < self.max_steps:
             navigation_steps.inc()
-            track = await self.frames.get()
-            if not track:
+            img = await self.frames.get()
+            if img is None:
                 await asyncio.sleep(0.01)
                 continue
-            frame = await track.recv()
-            logger.info(f"Got frame: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
-            img   = resize_and_validate_image(frame_to_pil_image(frame))
+            img = resize_and_validate_image(img)
             act = await self._navigate_once(img, history, step)
             if not act or act.get("action") == "ANSWER":
                 break
@@ -454,6 +465,7 @@ class NekoAgent:
             self.pc = None
         if self.signaler.ws:
             await self.signaler.ws.close()
+        await self.frames.stop()
 
     async def _on_track(self, track):
         logger.info(f"RTC: Received track: kind={track.kind}, id={track.id}")
@@ -546,14 +558,16 @@ async def main() -> None:
         print("[WARN] --ws provided, ignoring REST args",file=sys.stderr)
 
     agent = NekoAgent(
-        model=model, processor=processor,
+        model=model,
+        processor=processor,
         ws_url=ws_url,
-        nav_task=args.task, nav_mode=args.mode,
+        nav_task=args.task,
+        nav_mode=args.mode,
         max_steps=args.max_steps,
         metrics_port=args.metrics_port,
-        audio=args.audio
+        audio=args.audio,
     )
     await agent.run()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     asyncio.run(main())
