@@ -166,23 +166,16 @@ class FrameSaver:
     def __init__(self) -> None:
         self.frame: Optional[VideoStreamTrack] = None
         self.lock = asyncio.Lock()
+        self.first_frame = asyncio.Event()
+        self.updated_at = 0.0
 
     async def update(self, track:VideoStreamTrack) -> None:
         async with self.lock:
             self.frame = track
             frames_received.inc()
             logger.info(f"FrameSaver: Updated with new frame track {track}")
-            asyncio.create_task(self._probe_first_frame(track))
-
-    async def _probe_first_frame(self, track: VideoStreamTrack):
-        try:
-            logger.info("[HOT/COLD TEST] Probing first frame (timeout=10s)...")
-            frame = await asyncio.wait_for(track.recv(), timeout=10.0)
-            logger.info(f"[HOT/COLD TEST] First frame ARRIVED: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
-        except asyncio.TimeoutError:
-            logger.error("[HOT/COLD TEST] NO FRAME within 10s — video track may be cold or stuck.")
-        except Exception as e:
-            logger.error(f"[HOT/COLD TEST] Unexpected error: {e}")
+            self.first_frame.clear()
+            self.updated_at = asyncio.get_running_loop().time()
 
     async def get(self) -> Optional[VideoStreamTrack]:
         async with self.lock:
@@ -344,8 +337,29 @@ class NekoAgent:
             if not track:
                 await asyncio.sleep(0.01)
                 continue
-            frame = await track.recv()
-            logger.info(f"Got frame: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
+            if not self.frames.first_frame.is_set():
+                now = asyncio.get_running_loop().time()
+                delay = self.frames.updated_at + 1.0 - now
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                try:
+                    logger.info("[HOT/COLD TEST] Probing first frame (timeout=10s)...")
+                    frame = await asyncio.wait_for(track.recv(), timeout=10.0)
+                    self.frames.first_frame.set()
+                    logger.info(
+                        f"[HOT/COLD TEST] First frame ARRIVED: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}"
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "[HOT/COLD TEST] NO FRAME within 10s — video track may be cold or stuck."
+                    )
+                    continue
+                except Exception as e:
+                    logger.error(f"[HOT/COLD TEST] Unexpected error: {e}")
+                    continue
+            else:
+                frame = await track.recv()
+                logger.info(f"Got frame: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
             img   = resize_and_validate_image(frame_to_pil_image(frame))
             act = await self._navigate_once(img, history, step)
             if not act or act.get("action") == "ANSWER":
