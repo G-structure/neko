@@ -1,3 +1,4 @@
+#+BEGIN_SRC python
 #!/usr/bin/env python3
 """
 neko_agent.py — Robust ShowUI-2B Neko WebRTC GUI agent.
@@ -251,8 +252,17 @@ class NekoAgent:
                 logger.info("Ignoring system/init, waiting for offer/provide with ICE servers.")
                 continue
 
-        payload = offer_msg["payload"]
-        ice_servers_payload = payload.get("iceservers", [])
+        payload = offer_msg.get("payload", offer_msg)
+
+        # Neko historically used the key `ice` but newer versions use
+        # `iceservers`. Be tolerant and check multiple variants.
+        ice_servers_payload = (
+            payload.get("ice")
+            or payload.get("iceservers")
+            or payload.get("iceServers")
+            or payload.get("ice_servers")
+            or []
+        )
         logger.info("ICE servers from signal payload: %r", ice_servers_payload)
 
         ice_servers = []
@@ -561,3 +571,4 @@ async def main() -> None:
 
 if __name__=="__main__":
     asyncio.run(main())
+#+END_SRC
