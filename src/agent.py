@@ -14,6 +14,7 @@ from aiortc import (
     RTCConfiguration, RTCIceServer, RTCPeerConnection,
     RTCSessionDescription, RTCIceCandidate, VideoStreamTrack
 )
+from av import VideoFrame
 from PIL import Image
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 from prometheus_client import start_http_server, Counter, Histogram
@@ -118,17 +119,20 @@ def resize_and_validate_image(image:Image.Image) -> Image.Image:
         logger.info(f"Resized {ow}×{oh}→{nw}×{nh}")
     return image
 
-def frame_to_pil_image(frame:VideoStreamTrack) -> Image.Image:
+def frame_to_pil_image(frame: "VideoFrame") -> Image.Image:
+    """Convert an incoming aiortc ``VideoFrame`` to a Pillow ``Image``.
+
+    The Go backend delivers RGB frames so we mirror its logic by converting the
+    frame to an ``rgb24`` ndarray before constructing the ``Image``.  ``to_image``
+    from ``pyav`` can implicitly handle this, but using ``to_ndarray`` matches the
+    Go pipeline where frames are encoded in raw RGB bytes.
+    """
+
     logger.info("Decoding frame to PIL image...")
-    img = frame.to_image()
-    logger.info("Frame decoded successfully.")
-    logger.info(f"frame_to_pil_image: Got image {img.size}, mode {img.mode}")
-    try:
-        img.save("/Users/luc/projects/web-agent/screenshots/frame.png")
-        logger.info("Saved frame to /Users/luc/projects/web-agent/screenshots/frame.png")
-    except Exception as e:
-        logger.error(f"Error saving frame: {e}")
-    return img.convert("RGB") if img.mode!="RGB" else img
+    arr = frame.to_ndarray(format="rgb24")
+    img = Image.fromarray(arr, "RGB")
+    logger.info("Frame decoded successfully with size %s", img.size)
+    return img
 
 # ─── WebSocket / Signaling ────────────────────────────────────────────────────
 class Signaler:
