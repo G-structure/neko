@@ -4,7 +4,7 @@ neko_agent.py — Robust ShowUI-2B Neko WebRTC GUI agent.
 Usage: Provide either --ws (already have token) OR --neko-url + --username + --password for REST login.
 Env vars: NEKO_URL, NEKO_USER, NEKO_PASS, NEKO_WS, etc.
 """
-import os, sys, asyncio, json, signal, logging, random, uuid, contextlib
+import os, sys, asyncio, json, signal, logging, random, uuid, contextlib, time
 from typing import Any, Dict, List, Optional, Tuple
 
 import os
@@ -166,23 +166,16 @@ class FrameSaver:
     def __init__(self) -> None:
         self.frame: Optional[VideoStreamTrack] = None
         self.lock = asyncio.Lock()
+        self.first_frame = asyncio.Event()
+        self.updated_at = 0.0
 
     async def update(self, track:VideoStreamTrack) -> None:
         async with self.lock:
             self.frame = track
             frames_received.inc()
             logger.info(f"FrameSaver: Updated with new frame track {track}")
-            asyncio.create_task(self._probe_first_frame(track))
-
-    async def _probe_first_frame(self, track: VideoStreamTrack):
-        try:
-            logger.info("[HOT/COLD TEST] Probing first frame (timeout=10s)...")
-            frame = await asyncio.wait_for(track.recv(), timeout=10.0)
-            logger.info(f"[HOT/COLD TEST] First frame ARRIVED: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
-        except asyncio.TimeoutError:
-            logger.error("[HOT/COLD TEST] NO FRAME within 10s — video track may be cold or stuck.")
-        except Exception as e:
-            logger.error(f"[HOT/COLD TEST] Unexpected error: {e}")
+            self.first_frame.clear()
+            self.updated_at = time.monotonic()
 
     async def get(self) -> Optional[VideoStreamTrack]:
         async with self.lock:
@@ -266,13 +259,15 @@ class NekoAgent:
 
         ice_servers = []
         for srv in ice_servers_payload:
-            ice_servers.append(RTCIceServer(
-                urls=srv["urls"],
-                username=srv.get("username"),
-                credential=srv.get("credential"),
-            ))
-        # Add Google's public STUN as a fallback
-        ice_servers.append(RTCIceServer(urls=["stun:stun.l.google.com:19302"]))
+            ice_servers.append(
+                RTCIceServer(
+                    urls=srv["urls"],
+                    username=srv.get("username"),
+                    credential=srv.get("credential"),
+                )
+            )
+        if not ice_servers:
+            logger.info("No ICE servers provided; relying on NAT1to1 candidates only")
 
         config = RTCConfiguration(ice_servers)
         self.pc = RTCPeerConnection(config)
@@ -335,6 +330,21 @@ class NekoAgent:
             elif msg.get("event") == "signal/close":
                 break
 
+    async def _wait_connected(self, timeout: float = 10.0) -> None:
+        if not self.pc:
+            return
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while (
+            loop.time() < end
+            and self.pc.iceConnectionState not in ("connected", "completed")
+        ):
+            await asyncio.sleep(0.1)
+        if self.pc.iceConnectionState not in ("connected", "completed"):
+            logger.warning(
+                f"ICE state still {self.pc.iceConnectionState} after {timeout}s"
+            )
+
     async def _main_loop(self) -> None:
         history: List[Dict[str,Any]] = []
         step = 0
@@ -344,8 +354,28 @@ class NekoAgent:
             if not track:
                 await asyncio.sleep(0.01)
                 continue
-            frame = await track.recv()
-            logger.info(f"Got frame: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
+            await self._wait_connected()
+            if not self.frames.first_frame.is_set():
+                # avoid calling recv immediately after track update
+                delay = self.frames.updated_at + 1.0 - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                try:
+                    logger.info("[HOT/COLD TEST] Waiting for first frame (timeout=10s)...")
+                    frame = await asyncio.wait_for(track.recv(), timeout=10.0)
+                    self.frames.first_frame.set()
+                    logger.info(
+                        f"[HOT/COLD TEST] First frame ARRIVED: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}"
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("[HOT/COLD TEST] NO FRAME within 10s — video track may be cold or stuck.")
+                    continue
+                except Exception as e:
+                    logger.error(f"[HOT/COLD TEST] Unexpected error: {e}")
+                    continue
+            else:
+                frame = await track.recv()
+                logger.info(f"Got frame: pts={frame.pts}, time_base={getattr(frame, 'time_base', None)}")
             img   = resize_and_validate_image(frame_to_pil_image(frame))
             act = await self._navigate_once(img, history, step)
             if not act or act.get("action") == "ANSWER":
