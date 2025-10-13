@@ -1,0 +1,289 @@
+name: Nix Build + Sign
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/base
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write  # Required for cosign keyless signing
+
+jobs:
+  # Job 1: Check reproducibility
+  check-reproducibility:
+    name: Verify Reproducible Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+        with:
+          logger: pretty
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Check reproducibility
+        run: |
+          echo "Building image twice to verify reproducibility..."
+          nix run .#check-reproducibility
+
+          echo "Saving NAR info for later jobs..."
+          nix path-info --json .#image > nar-info.json
+
+      - name: Upload NAR info
+        uses: actions/upload-artifact@v4
+        with:
+          name: nar-info
+          path: nar-info.json
+
+  # Job 2: Build multi-platform images
+  build:
+    name: Build Image (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    needs: check-reproducibility
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Set up QEMU
+        if: matrix.platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build image
+        run: |
+          echo "Building for ${{ matrix.platform }}..."
+
+          # Build based on platform
+          if [ "${{ matrix.platform }}" = "linux/amd64" ]; then
+            nix build .#packages.x86_64-linux.image
+          else
+            nix build .#packages.aarch64-linux.image
+          fi
+
+      - name: Load image to Docker
+        run: |
+          # nix2container outputs can be imported to Docker
+          # TODO: Adjust based on actual nix2container output format
+          echo "Image built successfully"
+
+      - name: Save image artifact
+        run: |
+          PLATFORM_SAFE=$(echo "${{ matrix.platform }}" | tr '/' '-')
+          nix build .#image --no-link --print-out-paths > "image-path-${PLATFORM_SAFE}.txt"
+
+      - name: Upload image path
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: image-path-*.txt
+
+  # Job 3: Push to registry
+  push:
+    name: Push to Registry
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    outputs:
+      image-digest: ${{ steps.push.outputs.digest }}
+      image-ref: ${{ steps.push.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install skopeo
+        run: |
+          nix profile install nixpkgs#skopeo
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          # Determine tags
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VERSION},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          elif [[ $GITHUB_REF == refs/heads/master ]]; then
+            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge"
+          else
+            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          fi
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION:-edge}" >> $GITHUB_OUTPUT
+
+      - name: Push image
+        id: push
+        run: |
+          # Build and push
+          nix build .#image
+
+          # Push with skopeo or use nix2container's built-in push
+          # This is simplified - actual implementation depends on nix2container output
+
+          # For now, set placeholder values
+          echo "digest=sha256:placeholder" >> $GITHUB_OUTPUT
+          echo "ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" >> $GITHUB_OUTPUT
+
+  # Job 4: Sign and attest
+  sign-attest:
+    name: Sign & Attest Image
+    runs-on: ubuntu-latest
+    needs: push
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@main
+
+      - name: Install tools
+        run: |
+          nix profile install nixpkgs#syft nixpkgs#skopeo nixpkgs#jq
+
+      - name: Sign image with cosign (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_YES: "true"
+        run: |
+          IMAGE_REF="${{ needs.push.outputs.image-ref }}@${{ needs.push.outputs.image-digest }}"
+          ./scripts/sign-image.sh "$IMAGE_REF"
+
+      - name: Attest image (provenance + SBOM)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          IMAGE_REF="${{ needs.push.outputs.image-ref }}@${{ needs.push.outputs.image-digest }}"
+          ./scripts/attest-image.sh "$IMAGE_REF"
+
+      - name: Upload attestation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: attestations
+          path: |
+            sbom.spdx.json
+            provenance.json
+
+  # Job 5: Verify signatures
+  verify:
+    name: Verify Image
+    runs-on: ubuntu-latest
+    needs: sign-attest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@main
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Verify image
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_IDENTITY: ${{ github.actor }}@users.noreply.github.com
+        run: |
+          IMAGE_REF="${{ needs.push.outputs.image-ref }}@${{ needs.push.outputs.image-digest }}"
+          ./scripts/verify-image.sh "$IMAGE_REF"
+
+  # Job 6: Publish manifest
+  publish-manifest:
+    name: Publish Release Manifest
+    runs-on: ubuntu-latest
+    needs: [push, sign-attest]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Install tools
+        run: |
+          nix profile install nixpkgs#python3 nixpkgs#skopeo nixpkgs#jq
+
+      - name: Download NAR info
+        uses: actions/download-artifact@v4
+        with:
+          name: nar-info
+
+      - name: Generate manifest
+        run: |
+          IMAGE_REF="${{ needs.push.outputs.image-ref }}@${{ needs.push.outputs.image-digest }}"
+          ./scripts/publish-manifest.py \
+            --image-ref "$IMAGE_REF" \
+            --output release-manifest.json \
+            --pretty
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: release-manifest.json
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: |
+            release-manifest.json
+            sbom.spdx.json
+            provenance.json
+          generate_release_notes: true

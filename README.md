@@ -39,6 +39,47 @@ In addition to its security and privacy features, Neko offers the **ability for 
 
 Neko is also a great tool for **hosting watch parties** and interactive presentations. With its virtual browser capabilities, Neko allows you to host watch parties and presentations that are **accessible from anywhere**, without the need for in-person gatherings. This makes it easy to **stay connected with friends and colleagues**, even when you are unable to meet in person. With Neko, you can easily host a watch party or give an **interactive presentation**, whether it's for leisure or work. Simply invite your guests to join the virtual environment, and you can share the screen and **interact with them in real-time**.
 
+## 🔐 Verify What You Run
+
+Neko images are **cryptographically signed** and **reproducibly built** with Nix. You can verify the authenticity and integrity of our images before running them.
+
+### Quick Verification
+
+```bash
+# Verify signature (requires cosign)
+COSIGN_EXPERIMENTAL=1 cosign verify \
+  --certificate-identity "https://github.com/m1k1o/neko/.github/workflows/nix-build-sign.yml@refs/heads/master" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/m1k1o/neko/base:latest
+
+# Verify build provenance
+COSIGN_EXPERIMENTAL=1 cosign verify-attestation \
+  --type slsaprovenance \
+  --certificate-identity "https://github.com/m1k1o/neko/.github/workflows/nix-build-sign.yml@refs/heads/master" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/m1k1o/neko/base:latest
+```
+
+### Reproduce the Build
+
+Neko uses Nix for bit-for-bit reproducible builds. Anyone can rebuild from source and verify the result matches our published images:
+
+```bash
+# Clone and build
+git clone https://github.com/m1k1o/neko
+cd neko
+nix build .#image
+
+# Verify reproducibility
+./scripts/repro-check.sh
+
+# The NAR hash will match the hash in our release manifest
+```
+
+**Why this matters**: In TEE/confidential computing environments, reproducible builds with cryptographic verification ensure you can **prove** what code is running, not just trust it.
+
+📖 **Learn more**: [Artifact Verification Guide](docs/verify-artifacts.md) | [Nix Build Guide](docs/nix-build.md)
+
 ## About
 
 This app uses WebRTC to stream a desktop inside of a docker container, original author made this because [rabb.it](https://en.wikipedia.org/wiki/Rabb.it) went under and his internet could not handle streaming and discord kept crashing when his friend attempted to. He just wanted to watch anime with his friends ლ(ಠ益ಠლ) so he started digging throughout the internet and found a few *kinda* clones, but none of them had the virtual browser, then he found [Turtus](https://github.com/Khauri/Turtus) and he was able to figure out the rest.

@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+#
+# TDX/TEE Attested Key Provider (Stub Implementation)
+#
+# This script demonstrates how to obtain signing credentials
+# gated by TEE attestation. In production, this would:
+#   1. Generate a TDX/SGX/SEV-SNP attestation quote
+#   2. Send the quote to a Key Broker Service (KBS) or KMS
+#   3. Receive a signing key or sign-by-RPC capability
+#      only if the attestation policy is satisfied
+#   4. Expose the key for use by cosign
+#
+# For now, this is a configurable stub that can:
+#   - No-op (use keyless/existing credentials)
+#   - Simulate TDX attestation workflow
+#   - Integrate with actual KBS/AKV/GCP KMS (when TDX_ENABLED=1)
+#
+set -euo pipefail
+
+# Configuration
+TDX_ENABLED="${TDX_ENABLED:-0}"
+TDX_PROVIDER="${TDX_PROVIDER:-stub}"  # stub, azure-akv, gcp-kms, hashicorp-vault
+TDX_POLICY_URL="${TDX_POLICY_URL:-}"
+COSIGN_KEY_PATH="${COSIGN_KEY_PATH:-/tmp/cosign-ephemeral.key}"
+
+log() {
+  echo "[attested-key] $*" >&2
+}
+
+warn() {
+  echo "[attested-key] WARNING: $*" >&2
+}
+
+error() {
+  echo "[attested-key] ERROR: $*" >&2
+  exit 1
+}
+
+# No-op mode: TDX not enabled
+if [ "$TDX_ENABLED" != "1" ]; then
+  log "TDX not enabled - using existing credentials"
+  log "Set TDX_ENABLED=1 to use attested signing"
+  # Don't set COSIGN_KEY - let the calling script use keyless or existing key
+  return 0 2>/dev/null || exit 0
+fi
+
+log "TDX attestation enabled"
+log "Provider: $TDX_PROVIDER"
+
+# Check if running in a TEE
+check_tee_environment() {
+  # Check for TDX support
+  if [ -f /sys/firmware/tdx_seam/version ]; then
+    log "TDX environment detected: $(cat /sys/firmware/tdx_seam/version)"
+    return 0
+  fi
+
+  # Check for SGX support
+  if [ -f /dev/sgx_enclave ]; then
+    log "SGX environment detected"
+    return 0
+  fi
+
+  # Check for SEV-SNP support
+  if [ -f /sys/firmware/efi/efivars/SevStatus-* ]; then
+    log "SEV-SNP environment detected"
+    return 0
+  fi
+
+  warn "No TEE environment detected"
+  warn "TDX_ENABLED=1 but not running in a confidential VM"
+  warn "Proceeding with simulation mode..."
+  return 1
+}
+
+# Generate attestation quote
+generate_attestation_quote() {
+  local quote_file="/tmp/tdx-quote.bin"
+
+  log "Generating attestation quote..."
+
+  # In a real TDX environment, this would use:
+  #   - Intel TDX: tdx-attest or similar
+  #   - Azure: TPM-based attestation via az attestation
+  #   - GCP: Confidential Space attestation
+
+  # Simulation: Create a dummy quote
+  log "SIMULATION: Creating dummy attestation quote"
+  echo "TDX_QUOTE_PLACEHOLDER_$(date +%s)" > "$quote_file"
+
+  echo "$quote_file"
+}
+
+# Request key from Key Broker Service
+request_key_from_kbs() {
+  local quote_file="$1"
+  local output_key="$2"
+
+  log "Requesting signing key from KBS..."
+
+  case "$TDX_PROVIDER" in
+    stub)
+      log "STUB MODE: Simulating key retrieval"
+      log "In production, this would:"
+      log "  1. Send attestation quote to KBS/KMS"
+      log "  2. KBS validates the quote against policy"
+      log "  3. If policy satisfied, KBS releases the key"
+      log "  4. Key is stored in tmpfs (ephemeral, memory-only)"
+
+      # Simulate key retrieval
+      log "Generating ephemeral signing key..."
+      cosign generate-key-pair --output-key-prefix /tmp/cosign-ephemeral 2>/dev/null || {
+        warn "Could not generate key pair - using dummy key"
+        echo "DUMMY_PRIVATE_KEY" > "$output_key"
+      }
+
+      if [ -f /tmp/cosign-ephemeral.key ]; then
+        mv /tmp/cosign-ephemeral.key "$output_key"
+        chmod 600 "$output_key"
+        log "Ephemeral key generated: $output_key"
+      fi
+      ;;
+
+    azure-akv)
+      log "Azure AKV provider (not implemented in stub)"
+      log "In production, would use:"
+      log "  - az attestation attest --runtime-json <quote>"
+      log "  - az keyvault secret show --vault-name <vault> --name cosign-key"
+      error "Azure AKV provider requires manual implementation"
+      ;;
+
+    gcp-kms)
+      log "GCP KMS provider (not implemented in stub)"
+      log "In production, would use:"
+      log "  - gcloud confidentialcomputing attestations verify"
+      log "  - gcloud kms keys versions get-public-key"
+      error "GCP KMS provider requires manual implementation"
+      ;;
+
+    hashicorp-vault)
+      log "HashiCorp Vault provider (not implemented in stub)"
+      log "In production, would use Vault's KV secrets engine"
+      log "with policy gated by TDX attestation"
+      error "Vault provider requires manual implementation"
+      ;;
+
+    *)
+      error "Unknown TDX provider: $TDX_PROVIDER"
+      ;;
+  esac
+}
+
+# Main flow
+main() {
+  log "Starting TDX-attested key retrieval..."
+
+  # Check TEE environment
+  check_tee_environment || log "Continuing in simulation mode"
+
+  # Generate attestation quote
+  quote_file=$(generate_attestation_quote)
+  log "Attestation quote: $quote_file"
+
+  # Request key from KBS
+  request_key_from_kbs "$quote_file" "$COSIGN_KEY_PATH"
+
+  if [ -f "$COSIGN_KEY_PATH" ]; then
+    log "Signing key obtained: $COSIGN_KEY_PATH"
+    log "Key will be cleaned up after signing"
+
+    # Export for use by calling script
+    export COSIGN_KEY="$COSIGN_KEY_PATH"
+
+    # Set up cleanup trap
+    trap "log 'Cleaning up ephemeral key...'; shred -u '$COSIGN_KEY_PATH' 2>/dev/null || rm -f '$COSIGN_KEY_PATH'" EXIT
+
+    log "COSIGN_KEY exported: $COSIGN_KEY"
+  else
+    error "Failed to obtain signing key"
+  fi
+}
+
+# Run if not being sourced
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main
+fi

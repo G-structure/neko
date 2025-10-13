@@ -1,0 +1,148 @@
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: neko-image-policy
+spec:
+  images:
+    - glob: "ghcr.io/m1k1o/neko/**"
+
+  authorities:
+    # Keyless verification using GitHub Actions OIDC
+    - keyless:
+        url: https://fulcio.sigstore.dev
+        identities:
+          - issuer: https://token.actions.githubusercontent.com
+            subjectRegExp: "^https://github.com/m1k1o/neko/.*$"
+
+    # Alternative: Key-based verification
+    # Uncomment if using a static signing key
+    # - key:
+    #     data: |
+    #       -----BEGIN PUBLIC KEY-----
+    #       [Your public key here]
+    #       -----END PUBLIC KEY-----
+
+  # Attestation policies
+  attestations:
+    - name: must-have-slsa-provenance
+      predicateType: https://slsa.dev/provenance/v1
+      policy:
+        type: cue
+        data: |
+          // Require SLSA provenance attestation
+          predicateType: "https://slsa.dev/provenance/v1"
+
+          // Require build from official repository
+          predicate: {
+            buildDefinition: {
+              buildType: "https://nix.dev/flake-build@v1"
+              externalParameters: {
+                repository: "https://github.com/m1k1o/neko"
+              }
+            }
+          }
+
+    - name: must-have-sbom
+      predicateType: https://spdx.dev/Document
+      policy:
+        type: cue
+        data: |
+          // Require SBOM attachment
+          // SBOM can be SPDX or CycloneDX format
+
+  # Policy mode
+  mode: enforce  # Options: enforce, warn
+
+  # Match policy
+  match:
+    - image: "ghcr.io/m1k1o/neko/base"
+      signatures:
+        - minMatches: 1
+
+---
+# Example policy for Kubernetes admission controller (Kyverno)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-neko-images
+spec:
+  validationFailureAction: enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  rules:
+    - name: verify-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/m1k1o/neko/*"
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/m1k1o/neko/.github/workflows/*"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          attestations:
+            - predicateType: https://slsa.dev/provenance/v1
+              conditions:
+                - all:
+                    - key: "{{ predicate.buildDefinition.externalParameters.repository }}"
+                      operator: Equals
+                      value: "https://github.com/m1k1o/neko"
+                    - key: "{{ predicate.buildDefinition.buildType }}"
+                      operator: Equals
+                      value: "https://nix.dev/flake-build@v1"
+
+---
+# Example OPA Rego policy
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neko-image-verification-policy
+  namespace: opa
+data:
+  policy.rego: |
+    package kubernetes.admission
+
+    import future.keywords.if
+    import future.keywords.in
+
+    # Deny pods that don't use signed Neko images
+    deny[msg] if {
+      input.request.kind.kind == "Pod"
+      image := input.request.object.spec.containers[_].image
+      startswith(image, "ghcr.io/m1k1o/neko/")
+      not verified_signature(image)
+
+      msg := sprintf("Image %v must be signed and verified", [image])
+    }
+
+    # Check if image has valid signature
+    verified_signature(image) if {
+      # This is a simplified example
+      # In practice, you'd integrate with cosign verification
+      # or use a webhook that performs the actual verification
+
+      # For now, assume images with @sha256 digests are verified
+      contains(image, "@sha256:")
+    }
+
+    # Require SLSA provenance
+    deny[msg] if {
+      input.request.kind.kind == "Pod"
+      image := input.request.object.spec.containers[_].image
+      startswith(image, "ghcr.io/m1k1o/neko/")
+      not has_slsa_provenance(image)
+
+      msg := sprintf("Image %v must have SLSA provenance attestation", [image])
+    }
+
+    has_slsa_provenance(image) if {
+      # Placeholder - would check for attestation presence
+      true
+    }
