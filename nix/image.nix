@@ -1,6 +1,5 @@
 { pkgs
 , lib
-, nix2container
 , nekoServer
 , nekoClient
 , xorgDeps
@@ -10,8 +9,8 @@
 }:
 
 let
-  # Create a user setup script
-  setupUser = pkgs.writeShellScriptBin "setup-neko-user" ''
+  # Create an entrypoint script that sets up the environment before starting supervisord
+  entrypoint = pkgs.writeShellScriptBin "entrypoint" ''
     #!/bin/bash
     set -e
 
@@ -19,7 +18,14 @@ let
     USER_UID=1000
     USER_GID=1000
 
-    # Create group and user if they don't exist
+    # Create system groups first (audio, video, pulse)
+    for group in audio video pulse; do
+      if ! getent group $group >/dev/null 2>&1; then
+        groupadd -r $group || true
+      fi
+    done
+
+    # Create neko group and user if they don't exist
     if ! getent group $USERNAME >/dev/null 2>&1; then
       groupadd --gid $USER_GID $USERNAME
     fi
@@ -28,13 +34,14 @@ let
       useradd --uid $USER_UID --gid $USERNAME --shell /bin/bash --create-home $USERNAME
     fi
 
-    # Add user to groups
-    usermod -aG audio,video,pulse $USERNAME || true
+    # Add user to system groups
+    usermod -aG audio,video,pulse $USERNAME 2>/dev/null || true
 
-    # Create necessary directories
+    # Create necessary runtime directories
+    mkdir -p /var/run /var/log /var/lock
     mkdir -p /tmp/.X11-unix
     chmod 1777 /tmp/.X11-unix
-    chown $USERNAME /tmp/.X11-unix/ || true
+    chown $USERNAME:$USERNAME /tmp/.X11-unix/ || true
 
     mkdir -p /etc/neko /var/www /var/log/neko \
         /tmp/runtime-$USERNAME \
@@ -42,7 +49,10 @@ let
         /home/$USERNAME/.local/share/xorg
 
     chmod 1777 /var/log/neko || true
-    chown -R $USERNAME:$USERNAME /var/log/neko /tmp/runtime-$USERNAME /home/$USERNAME || true
+    chown -R $USERNAME:$USERNAME /var/log/neko /tmp/runtime-$USERNAME /home/$USERNAME 2>/dev/null || true
+
+    # Start supervisord
+    exec /bin/supervisord -c /etc/neko/supervisord.conf
   '';
 
   # Copy runtime configs to proper locations
@@ -84,65 +94,68 @@ let
     cp ${../config.yml} $out/etc/neko/neko.yaml
   '';
 
-  # Combine all components
-  rootfs = pkgs.buildEnv {
-    name = "neko-rootfs";
-    paths = [
-      runtimeEnv
-      configFiles
-      setupUser
+  # Add server binary and plugins
+  serverInstall = pkgs.runCommand "neko-server-install" {} ''
+    mkdir -p $out/usr/bin
+    mkdir -p $out/etc/neko/plugins
 
-      # Add server binary and plugins
-      (pkgs.runCommand "neko-server-install" {} ''
-        mkdir -p $out/usr/bin
-        mkdir -p $out/etc/neko/plugins
+    cp ${nekoServer}/bin/neko $out/usr/bin/neko
+    chmod +x $out/usr/bin/neko
 
-        cp ${nekoServer}/bin/neko $out/usr/bin/neko
-        chmod +x $out/usr/bin/neko
+    # Copy plugins if they exist
+    if [ -d ${nekoServer}/plugins ]; then
+      cp -r ${nekoServer}/plugins/* $out/etc/neko/plugins/ || true
+    fi
+  '';
 
-        # Copy plugins if they exist
-        if [ -d ${nekoServer}/plugins ]; then
-          cp -r ${nekoServer}/plugins/* $out/etc/neko/plugins/ || true
-        fi
-      '')
+  # Add client dist
+  clientInstall = pkgs.runCommand "neko-client-install" {} ''
+    mkdir -p $out/var/www
+    cp -r ${nekoClient}/* $out/var/www/
+  '';
 
-      # Add client dist
-      (pkgs.runCommand "neko-client-install" {} ''
-        mkdir -p $out/var/www
-        cp -r ${nekoClient}/* $out/var/www/
-      '')
+  # Add X.org drivers
+  xorgInstall = pkgs.runCommand "neko-xorg-install" {} ''
+    mkdir -p $out/usr/lib/xorg/modules/drivers
+    mkdir -p $out/usr/lib/xorg/modules/input
 
-      # Add X.org drivers
-      (pkgs.runCommand "neko-xorg-install" {} ''
-        mkdir -p $out/usr/lib/xorg/modules/drivers
-        mkdir -p $out/usr/lib/xorg/modules/input
-
-        cp ${xorgDeps.dummyDriver} $out/usr/lib/xorg/modules/drivers/dummy_drv.so
-        cp ${xorgDeps.nekoDriver} $out/usr/lib/xorg/modules/input/neko_drv.so
-      '')
-    ];
-
-    pathsToLink = [ "/bin" "/usr" "/etc" "/var" "/home" "/tmp" ];
-  };
+    cp ${xorgDeps.dummyDriver} $out/usr/lib/xorg/modules/drivers/dummy_drv.so
+    cp ${xorgDeps.nekoDriver} $out/usr/lib/xorg/modules/input/neko_drv.so
+  '';
 
 in
-nix2container.buildImage {
-  name = "ghcr.io/m1k1o/neko/base";
+pkgs.dockerTools.buildLayeredImage {
+  # Image name and tag
+  name = "neko-base";
   tag = version;
 
-  # Maximum layers for optimization
-  maxLayers = 100;
+  # Maximum number of layers for optimal caching (modern Docker supports up to 128)
+  maxLayers = 128;
 
-  # Copy the entire rootfs
-  copyToRoot = [ rootfs ];
+  # Layer contents - Nix will automatically optimize layer distribution
+  # based on dependency popularity for better cache hits
+  contents = [
+    # Runtime environment (base system, X11, audio, video, fonts)
+    runtimeEnv
 
-  # Deterministic timestamp (epoch or SOURCE_DATE_EPOCH)
-  created = "1970-01-01T00:00:01Z";
+    # Configuration files (most frequently changed)
+    configFiles
+
+    # Entrypoint script
+    entrypoint
+
+    # Application components
+    serverInstall
+    clientInstall
+
+    # Custom X.org drivers
+    xorgInstall
+  ];
 
   # Image configuration
   config = {
-    # Command to run
-    Cmd = [ "/usr/bin/supervisord" "-c" "/etc/neko/supervisord.conf" ];
+    # Command to run (entrypoint sets up environment and starts supervisord)
+    Cmd = [ "/bin/entrypoint" ];
 
     # Environment variables (from runtime/Dockerfile:95-101)
     Env = [
@@ -164,11 +177,6 @@ nix2container.buildImage {
     # Working directory
     WorkingDir = "/home/neko";
 
-    # Run as neko user (UID:GID)
-    # Note: nix2container may need the user to exist in /etc/passwd
-    # For now, we'll run as root and supervisord will su to neko
-    # User = "neko";
-
     # Labels (from Dockerfile.tmpl:9)
     Labels = {
       "net.m1k1o.neko.api-version" = "3";
@@ -180,26 +188,5 @@ nix2container.buildImage {
       "dev.nix.build" = "true";
       "dev.nix.reproducible" = "true";
     };
-
-    # Health check (from runtime/Dockerfile:105-108)
-    Healthcheck = {
-      Test = [
-        "CMD-SHELL"
-        "wget -O - http://localhost:8080/health || wget --no-check-certificate -O - https://localhost:8080/health || exit 1"
-      ];
-      Interval = 10000000000;  # 10s in nanoseconds
-      Timeout = 5000000000;    # 5s
-      Retries = 8;
-    };
-  };
-
-  # Additional metadata
-  meta = with lib; {
-    description = "Neko base image - self-hosted virtual browser (Nix build)";
-    homepage = "https://github.com/m1k1o/neko";
-    license = licenses.asl20;
-    platforms = platforms.linux;
-    # Can be built from Darwin via cross-compilation
-    broken = false;
   };
 }

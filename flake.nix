@@ -5,11 +5,6 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    nix2container = {
-      url = "github:nlewo/nix2container";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     systems.url = "github:nix-systems/default";
 
     flake-utils = {
@@ -18,7 +13,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, nix2container, flake-utils, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, flake-utils, ... }:
     let
       # Only support x86_64-linux
       system = "x86_64-linux";
@@ -38,8 +33,6 @@
           })
         ];
       };
-
-      nix2containerPkgs = nix2container.packages.${system};
 
       # Import version info from git
       versionInfo = import ./nix/lib/version.nix {
@@ -64,7 +57,6 @@
       image = pkgs.callPackage ./nix/image.nix {
         inherit nekoServer nekoClient xorgDeps runtimeEnv;
         inherit (commonArgs) version SOURCE_DATE_EPOCH;
-        nix2container = nix2containerPkgs.nix2container;
       };
 
       # SBOM generation

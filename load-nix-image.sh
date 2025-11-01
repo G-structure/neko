@@ -4,13 +4,21 @@
 
 set -euo pipefail
 
-echo "Building nix2container image..."
-nix build .#packages.x86_64-linux.image --print-out-paths
+echo "Building nix2container image on remote builder..."
+BUILD_OUTPUT=$(nix build .#packages.x86_64-linux.image --print-out-paths --no-link)
 
-echo "Streaming OCI archive from remote builder..."
+# Extract the store path (last line of output)
+STORE_PATH=$(echo "$BUILD_OUTPUT" | tail -1)
+echo "Built image at: $STORE_PATH"
+
+# Get the copy-to script path from the store path
+COPY_TO_PATH="${STORE_PATH}/bin/copy-to"
+
+echo "Copying OCI archive from remote builder..."
+echo "Using copy-to path: $COPY_TO_PATH"
 sudo -E bash -c '
-  ssh -i /etc/nix/ec2_builder_ed25519 ec2-builder \
-    "/nix/store/93r3qvc7q8v88z11j2pw45dlp2bqr75d-copy-to/bin/copy-to oci-archive:/home/admin/neko.tar >/dev/null 2>&1 && cat /home/admin/neko.tar && rm /home/admin/neko.tar" \
+  ssh -i /Users/wikigen/Downloads/nix\ builder\ was.pem ec2-builder \
+    "/nix/store/dxx17layj3y2sp7g95q4rfgv0sx5cbq6-copy-to/bin/copy-to oci-archive:/home/admin/neko.tar >/dev/null 2>&1 && cat /home/admin/neko.tar && rm /home/admin/neko.tar" \
     > neko-image.tar
 '
 
