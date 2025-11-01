@@ -1,0 +1,45 @@
+[Unit]
+Description=Neko Desktop Agent
+Documentation=https://neko.m1k1o.net/
+After=graphical.target network.target
+
+[Service]
+Type=simple
+# Run as the specified user
+User=%i
+# Set display environment variable
+Environment="DISPLAY=:0"
+# Optional: Set a fixed token (remove to generate random token each start)
+# Environment="NEKO_AGENT_TOKEN=your-secure-token-here"
+
+# Main service executable
+ExecStart=/usr/local/bin/neko agent \
+    --desktop.display=:0 \
+    --desktop.width=1920 \
+    --desktop.height=1080 \
+    --desktop.frame_rate=30 \
+    --capture.display=:0 \
+    --capture.video_codec=h264 \
+    --capture.audio_device=auto_null.monitor \
+    --webrtc.ice_lite=true \
+    --server.bind=127.0.0.1:8080 \
+    --server.path_prefix=/ \
+    --token=${NEKO_AGENT_TOKEN}
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+
+# Security hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp
+
+# Resource limits (optional)
+# CPUQuota=80%
+# MemoryLimit=2G
+
+[Install]
+WantedBy=default.target

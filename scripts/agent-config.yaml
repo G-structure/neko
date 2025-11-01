@@ -1,0 +1,74 @@
+# Neko Agent Configuration
+# Minimal configuration for single-user desktop streaming
+
+# Desktop configuration
+desktop:
+  # X11 display to capture (usually :0 for primary display)
+  display: :0
+  # Screen resolution
+  width: 1920
+  height: 1080
+  frame_rate: 30
+
+# Capture configuration
+capture:
+  # Must match desktop display
+  display: :0
+
+  # Video codec (h264, vp8, vp9)
+  video_codec: h264
+
+  # Video bitrate in kbps
+  video_bitrate: 3072
+
+  # Audio device (use 'pactl list sources' to find available devices)
+  # For PulseAudio monitor (desktop audio): auto_null.monitor
+  # For microphone: Usually default or a specific device name
+  audio_device: auto_null.monitor
+
+  # Audio codec
+  audio_codec: opus
+  audio_bitrate: 128
+
+# WebRTC configuration
+webrtc:
+  # Use ICE Lite mode for simplified networking (good for LAN/VPN)
+  ice_lite: true
+
+  # Port range for WebRTC
+  epr_min: 52000
+  epr_max: 52100
+
+  # NAT1To1 IPs (uncomment and set your public IP if behind NAT)
+  # nat1to1:
+  #   - "YOUR_PUBLIC_IP"
+
+  # STUN/TURN servers (uncomment if needed for NAT traversal)
+  # ice_servers:
+  #   - urls:
+  #       - "stun:stun.l.google.com:19302"
+  #   - urls:
+  #       - "turn:your-turn-server.com:3478"
+  #     username: "username"
+  #     credential: "password"
+
+# Server configuration
+server:
+  # Bind address (use 0.0.0.0:8080 for all interfaces)
+  bind: 127.0.0.1:8080
+
+  # URL path prefix
+  path_prefix: /
+
+  # Enable CORS (for web clients on different domains)
+  cors:
+    - "*"
+
+  # Enable Prometheus metrics endpoint
+  metrics: false
+
+  # Enable pprof profiling endpoints (for debugging)
+  pprof: false
+
+# Agent-specific settings (passed as command line args)
+# token: "your-secure-token-here"  # Set via --token flag or NEKO_AGENT_TOKEN env var
