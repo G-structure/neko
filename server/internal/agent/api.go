@@ -48,6 +48,11 @@ func (a *ApiManagerCtx) Route(r types.Router) {
 	r.Get("/room", a.roomHandler)
 }
 
+// AddRouter allows plugins to add custom routes
+func (a *ApiManagerCtx) AddRouter(path string, router func(types.Router)) {
+	// No-op for agent mode - plugins not supported
+}
+
 func (a *ApiManagerCtx) healthCheck(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(map[string]bool{
@@ -69,7 +74,7 @@ func (a *ApiManagerCtx) statsHandler(w http.ResponseWriter, r *http.Request) err
 		"capture": map[string]any{
 			"video_codec": a.capture.Video().Codec().Name,
 			"audio_codec": a.capture.Audio().Codec().Name,
-			"broadcast":   a.capture.Broadcast().Enabled(),
+			"broadcast":   a.capture.Broadcast().Started(),
 			"screencast":  a.capture.Screencast().Enabled(),
 		},
 	}
@@ -107,9 +112,9 @@ func (a *ApiManagerCtx) roomHandler(w http.ResponseWriter, r *http.Request) erro
 		"settings": settings,
 		"video_codec": map[string]any{
 			"name": videoCodec.Name,
-			"hwenc": videoCodec.Type == codec.VP8 ||
-			        videoCodec.Type == codec.VP9 ||
-			        videoCodec.Type == codec.H264,
+			"hwenc": videoCodec.Name == codec.VP8().Name ||
+			        videoCodec.Name == codec.VP9().Name ||
+			        videoCodec.Name == codec.H264().Name,
 		},
 	}
 

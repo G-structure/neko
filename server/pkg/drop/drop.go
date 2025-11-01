@@ -1,9 +1,11 @@
+//go:build !darwin
+
 package drop
 
 /*
 #cgo pkg-config: gtk+-3.0
 
-#include "drop.h"
+#include "drop_linux.h"
 */
 import "C"
 

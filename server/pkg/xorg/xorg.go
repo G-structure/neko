@@ -1,9 +1,11 @@
+//go:build !darwin
+
 package xorg
 
 /*
 #cgo LDFLAGS: -lX11 -lXrandr -lXtst -lXfixes -lxcvt
 
-#include "xorg.h"
+#include "xorg_linux.h"
 */
 import "C"
 

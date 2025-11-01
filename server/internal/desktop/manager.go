@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"os/exec"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/m1k1o/neko/server/internal/config"
+	"github.com/m1k1o/neko/server/pkg/darwin"
+	"github.com/m1k1o/neko/server/pkg/desktop"
 	"github.com/m1k1o/neko/server/pkg/types"
 	"github.com/m1k1o/neko/server/pkg/xevent"
 	"github.com/m1k1o/neko/server/pkg/xinput"
@@ -26,6 +29,11 @@ type DesktopManagerCtx struct {
 	emmiter    events.EventEmmiter
 	config     *config.Desktop
 	screenSize types.ScreenSize // cached screen size
+
+	// Platform-specific backend
+	backend    desktop.Backend
+
+	// Linux-specific (will be nil on macOS)
 	input      xinput.Driver
 
 	// Clipboard process holding the most recent clipboard data.
@@ -35,11 +43,24 @@ type DesktopManagerCtx struct {
 }
 
 func New(config *config.Desktop) *DesktopManagerCtx {
+	// Create platform-specific backend
+	var backend desktop.Backend
 	var input xinput.Driver
-	if config.UseInputDriver {
-		input = xinput.NewDriver(config.InputSocket)
-	} else {
-		input = xinput.NewDummy()
+
+	switch runtime.GOOS {
+	case "darwin":
+		backend = darwin.NewBackend()
+	case "linux":
+		backend = xorg.NewBackend()
+
+		// Linux-specific input driver
+		if config.UseInputDriver {
+			input = xinput.NewDriver(config.InputSocket)
+		} else {
+			input = xinput.NewDummy()
+		}
+	default:
+		log.Panic().Str("os", runtime.GOOS).Msg("unsupported operating system")
 	}
 
 	return &DesktopManagerCtx{
@@ -48,60 +69,77 @@ func New(config *config.Desktop) *DesktopManagerCtx {
 		emmiter:    events.New(),
 		config:     config,
 		screenSize: config.ScreenSize,
+		backend:    backend,
 		input:      input,
 	}
 }
 
 func (manager *DesktopManagerCtx) Start() {
-	if xorg.DisplayOpen(manager.config.Display) {
-		manager.logger.Panic().Str("display", manager.config.Display).Msg("unable to open display")
+	// Initialize backend
+	if err := manager.backend.Init(manager.config.Display); err != nil {
+		manager.logger.Panic().Err(err).Msg("unable to initialize desktop backend")
 	}
 
-	// X11 can throw errors below, and the default error handler exits
-	xevent.SetupErrorHandler()
+	// Linux-specific initialization
+	if runtime.GOOS == "linux" {
+		// X11 can throw errors below, and the default error handler exits
+		xevent.SetupErrorHandler()
 
-	xorg.GetScreenConfigurations()
+		// Get screen configurations
+		manager.backend.GetScreenConfigurations()
 
-	screenSize, err := xorg.ChangeScreenSize(manager.config.ScreenSize)
-	if err != nil {
-		manager.logger.Err(err).
-			Str("screen_size", screenSize.String()).
-			Msgf("unable to set initial screen size")
-	} else {
-		// cache screen size
-		manager.screenSize = screenSize
+		// Set initial screen size
+		screenSize, err := manager.backend.SetScreenSize(manager.config.ScreenSize)
+		if err != nil {
+			manager.logger.Err(err).
+				Str("screen_size", screenSize.String()).
+				Msgf("unable to set initial screen size")
+		} else {
+			// cache screen size
+			manager.screenSize = screenSize
+			manager.logger.Info().
+				Str("screen_size", screenSize.String()).
+				Msgf("setting initial screen size")
+		}
+
+		// Connect input driver
+		if manager.input != nil {
+			err = manager.input.Connect()
+			if err != nil {
+				// TODO: fail silently to dummy driver?
+				manager.logger.Panic().Err(err).Msg("unable to connect to input driver")
+			}
+		}
+
+		// Set up event listeners
+		xevent.Unminimize = manager.config.Unminimize
+		xevent.FileChooserDialog = manager.config.FileChooserDialog
+		go xevent.EventLoop(manager.config.Display)
+
+		// In case it was opened
+		if manager.config.FileChooserDialog {
+			go manager.CloseFileChooserDialog()
+		}
+
+		manager.OnEventError(func(error_code uint8, message string, request_code uint8, minor_code uint8) {
+			manager.logger.Warn().
+				Uint8("error_code", error_code).
+				Str("message", message).
+				Uint8("request_code", request_code).
+				Uint8("minor_code", minor_code).
+				Msg("X event error occured")
+		})
+	} else if runtime.GOOS == "darwin" {
+		// macOS-specific initialization
+		// Get current screen size (can't change it on macOS)
+		manager.screenSize = manager.backend.GetScreenSize()
 		manager.logger.Info().
-			Str("screen_size", screenSize.String()).
-			Msgf("setting initial screen size")
+			Str("screen_size", manager.screenSize.String()).
+			Msg("detected screen size")
 	}
 
-	err = manager.input.Connect()
-	if err != nil {
-		// TODO: fail silently to dummy driver?
-		manager.logger.Panic().Err(err).Msg("unable to connect to input driver")
-	}
-
-	// set up event listeners
-	xevent.Unminimize = manager.config.Unminimize
-	xevent.FileChooserDialog = manager.config.FileChooserDialog
-	go xevent.EventLoop(manager.config.Display)
-
-	// in case it was opened
-	if manager.config.FileChooserDialog {
-		go manager.CloseFileChooserDialog()
-	}
-
-	manager.OnEventError(func(error_code uint8, message string, request_code uint8, minor_code uint8) {
-		manager.logger.Warn().
-			Uint8("error_code", error_code).
-			Str("message", message).
-			Uint8("request_code", request_code).
-			Uint8("minor_code", minor_code).
-			Msg("X event error occured")
-	})
-
+	// Start debounce goroutine
 	manager.wg.Add(1)
-
 	go func() {
 		defer manager.wg.Done()
 
@@ -115,8 +153,15 @@ func (manager *DesktopManagerCtx) Start() {
 			case <-manager.shutdown:
 				return
 			case <-ticker.C:
-				xorg.CheckKeys(debounceDuration)
-				manager.input.Debounce(debounceDuration)
+				// Reset stuck keys
+				if runtime.GOOS == "linux" {
+					// Use xorg.CheckKeys for Linux
+					xorg.CheckKeys(debounceDuration)
+					if manager.input != nil {
+						manager.input.Debounce(debounceDuration)
+					}
+				}
+				// macOS doesn't need key debouncing as RobotGo handles it
 			}
 		}
 	}()
@@ -142,6 +187,10 @@ func (manager *DesktopManagerCtx) Shutdown() error {
 	manager.replaceClipboardCommand(nil)
 	manager.wg.Wait()
 
-	xorg.DisplayClose()
+	// Shutdown backend
+	manager.backend.Shutdown()
+
 	return nil
 }
+
+// Add more methods that delegate to the backend...

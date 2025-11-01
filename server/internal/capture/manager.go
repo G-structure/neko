@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/rs/zerolog"
@@ -49,10 +50,23 @@ func New(desktop types.DesktopManager, config *config.Capture) *CaptureManagerCt
 				return "", err
 			}
 
-			return fmt.Sprintf(
-				"ximagesrc display-name=%s show-pointer=%v use-damage=false "+
-					"%s ! appsink name=appsink", config.Display, pipelineConf.ShowPointer, pipeline,
-			), nil
+			// Use platform-specific capture source
+			var captureSource string
+			if runtime.GOOS == "darwin" {
+				// macOS: Use AVFoundation video source
+				captureSource = fmt.Sprintf(
+					"avfvideosrc capture-screen=true capture-screen-cursor=%v ",
+					pipelineConf.ShowPointer,
+				)
+			} else {
+				// Linux: Use X11 image source
+				captureSource = fmt.Sprintf(
+					"ximagesrc display-name=%s show-pointer=%v use-damage=false ",
+					config.Display, pipelineConf.ShowPointer,
+				)
+			}
+
+			return captureSource + pipeline + " ! appsink name=appsink", nil
 		}
 
 		// trigger function to catch evaluation errors at startup
@@ -93,20 +107,37 @@ func New(desktop types.DesktopManager, config *config.Capture) *CaptureManagerCt
 				return strings.Replace(pipeline, "{url}", url, 1), nil
 			}
 
+			// Platform-specific video source
+			var videoSource string
+			if runtime.GOOS == "darwin" {
+				videoSource = "avfvideosrc capture-screen=true capture-screen-cursor=true "
+			} else {
+				videoSource = fmt.Sprintf("ximagesrc display-name=%s show-pointer=true use-damage=false ", config.Display)
+			}
+
+			// Platform-specific audio source
+			var audioSource string
+			if runtime.GOOS == "darwin" {
+				// macOS audio capture (may need adjustment based on device)
+				audioSource = "osxaudiosrc "
+			} else {
+				audioSource = fmt.Sprintf("pulsesrc device=%s ", config.AudioDevice)
+			}
+
 			return fmt.Sprintf(
 				"flvmux name=mux ! rtmpsink location='%s live=1' "+
-					"pulsesrc device=%s "+
+					"%s"+
 					"! audio/x-raw,channels=2 "+
 					"! audioconvert "+
 					"! queue "+
 					"! voaacenc bitrate=%d "+
 					"! mux. "+
-					"ximagesrc display-name=%s show-pointer=true use-damage=false "+
+					"%s"+
 					"! video/x-raw "+
 					"! videoconvert "+
 					"! queue "+
 					"! x264enc threads=4 bitrate=%d key-int-max=15 byte-stream=true tune=zerolatency speed-preset=%s "+
-					"! mux.", url, config.AudioDevice, config.BroadcastAudioBitrate*1000, config.Display, config.BroadcastVideoBitrate, config.BroadcastPreset,
+					"! mux.", url, audioSource, config.BroadcastAudioBitrate*1000, videoSource, config.BroadcastVideoBitrate, config.BroadcastPreset,
 			), nil
 		}, config.BroadcastUrl, config.BroadcastAutostart),
 		screencast: screencastNew(config.ScreencastEnabled, func() string {
@@ -115,13 +146,21 @@ func New(desktop types.DesktopManager, config *config.Capture) *CaptureManagerCt
 				return strings.Replace(config.ScreencastPipeline, "{display}", config.Display, 1)
 			}
 
+			// Platform-specific video source
+			var videoSource string
+			if runtime.GOOS == "darwin" {
+				videoSource = "avfvideosrc capture-screen=true capture-screen-cursor=true "
+			} else {
+				videoSource = fmt.Sprintf("ximagesrc display-name=%s show-pointer=true use-damage=false ", config.Display)
+			}
+
 			return fmt.Sprintf(
-				"ximagesrc display-name=%s show-pointer=true use-damage=false "+
+				"%s"+
 					"! video/x-raw,framerate=%s "+
 					"! videoconvert "+
 					"! queue "+
 					"! jpegenc quality=%s "+
-					"! appsink name=appsink", config.Display, config.ScreencastRate, config.ScreencastQuality,
+					"! appsink name=appsink", videoSource, config.ScreencastRate, config.ScreencastQuality,
 			)
 		}()),
 
@@ -131,13 +170,23 @@ func New(desktop types.DesktopManager, config *config.Capture) *CaptureManagerCt
 				return strings.Replace(config.AudioPipeline, "{device}", config.AudioDevice, 1), nil
 			}
 
+			// Platform-specific audio source
+			var audioSource string
+			if runtime.GOOS == "darwin" {
+				// macOS: Use Core Audio
+				audioSource = "osxaudiosrc "
+			} else {
+				// Linux: Use PulseAudio
+				audioSource = fmt.Sprintf("pulsesrc device=%s ", config.AudioDevice)
+			}
+
 			return fmt.Sprintf(
-				"pulsesrc device=%s "+
+				"%s"+
 					"! audio/x-raw,channels=2 "+
 					"! audioconvert "+
 					"! queue "+
 					"! %s "+
-					"! appsink name=appsink", config.AudioDevice, config.AudioCodec.Pipeline,
+					"! appsink name=appsink", audioSource, config.AudioCodec.Pipeline,
 			), nil
 		}, "audio"),
 		video: streamSelectorNew(config.VideoCodec, videos, config.VideoIDs),

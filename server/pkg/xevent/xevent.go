@@ -1,9 +1,11 @@
+//go:build !darwin
+
 package xevent
 
 /*
 #cgo LDFLAGS: -lX11 -lXfixes
 
-#include "xevent.h"
+#include "xevent_linux.h"
 */
 import "C"
 

@@ -4,53 +4,65 @@ import (
 	"image"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"time"
 
+	"github.com/m1k1o/neko/server/pkg/darwin"
+	"github.com/m1k1o/neko/server/pkg/desktop"
 	"github.com/m1k1o/neko/server/pkg/types"
 	"github.com/m1k1o/neko/server/pkg/xorg"
 )
 
+// Move moves the mouse cursor
 func (manager *DesktopManagerCtx) Move(x, y int) {
-	xorg.Move(x, y)
+	manager.backend.Move(x, y)
 }
 
+// GetCursorPosition returns the current cursor position
 func (manager *DesktopManagerCtx) GetCursorPosition() (int, int) {
-	return xorg.GetCursorPosition()
+	return manager.backend.GetCursorPosition()
 }
 
+// Scroll performs a scroll action
 func (manager *DesktopManagerCtx) Scroll(deltaX, deltaY int, controlKey bool) {
-	xorg.Scroll(deltaX, deltaY, controlKey)
+	manager.backend.Scroll(deltaX, deltaY, controlKey)
 }
 
+// ButtonDown presses a mouse button
 func (manager *DesktopManagerCtx) ButtonDown(code uint32) error {
-	return xorg.ButtonDown(code)
+	return manager.backend.ButtonDown(code)
 }
 
+// KeyDown presses a keyboard key
 func (manager *DesktopManagerCtx) KeyDown(code uint32) error {
-	return xorg.KeyDown(code)
+	return manager.backend.KeyDown(code)
 }
 
+// ButtonUp releases a mouse button
 func (manager *DesktopManagerCtx) ButtonUp(code uint32) error {
-	return xorg.ButtonUp(code)
+	return manager.backend.ButtonUp(code)
 }
 
+// KeyUp releases a keyboard key
 func (manager *DesktopManagerCtx) KeyUp(code uint32) error {
-	return xorg.KeyUp(code)
+	return manager.backend.KeyUp(code)
 }
 
+// ButtonPress performs a button press (down only, with key reset)
 func (manager *DesktopManagerCtx) ButtonPress(code uint32) error {
-	xorg.ResetKeys()
-	defer xorg.ResetKeys()
+	manager.backend.ResetKeys()
+	defer manager.backend.ResetKeys()
 
-	return xorg.ButtonDown(code)
+	return manager.backend.ButtonDown(code)
 }
 
+// KeyPress simulates key presses
 func (manager *DesktopManagerCtx) KeyPress(codes ...uint32) error {
-	xorg.ResetKeys()
-	defer xorg.ResetKeys()
+	manager.backend.ResetKeys()
+	defer manager.backend.ResetKeys()
 
 	for _, code := range codes {
-		if err := xorg.KeyDown(code); err != nil {
+		if err := manager.backend.KeyDown(code); err != nil {
 			return err
 		}
 	}
@@ -62,29 +74,35 @@ func (manager *DesktopManagerCtx) KeyPress(codes ...uint32) error {
 	return nil
 }
 
+// ResetKeys releases all pressed keys
 func (manager *DesktopManagerCtx) ResetKeys() {
-	xorg.ResetKeys()
+	manager.backend.ResetKeys()
 }
 
+// ScreenConfigurations returns available screen configurations
 func (manager *DesktopManagerCtx) ScreenConfigurations() []types.ScreenSize {
-	var configs []types.ScreenSize
-	for _, size := range xorg.ScreenConfigurations {
-		for _, fps := range size.Rates {
-			// filter out all irrelevant rates
-			if fps > 60 || (fps > 30 && fps%10 != 0) {
+	configs := manager.backend.GetScreenConfigurations()
+
+	var sizes []types.ScreenSize
+	for _, config := range configs {
+		for _, rate := range config.Rates {
+			// Filter out all irrelevant rates
+			if rate > 60 || (rate > 30 && rate%10 != 0) {
 				continue
 			}
 
-			configs = append(configs, types.ScreenSize{
-				Width:  size.Width,
-				Height: size.Height,
-				Rate:   fps,
+			sizes = append(sizes, types.ScreenSize{
+				Width:  config.Width,
+				Height: config.Height,
+				Rate:   rate,
 			})
 		}
 	}
-	return configs
+
+	return sizes
 }
 
+// SetScreenSize sets the screen resolution
 func (manager *DesktopManagerCtx) SetScreenSize(screenSize types.ScreenSize) (types.ScreenSize, error) {
 	mu.Lock()
 	manager.emmiter.Emit("before_screen_size_change")
@@ -94,28 +112,41 @@ func (manager *DesktopManagerCtx) SetScreenSize(screenSize types.ScreenSize) (ty
 		mu.Unlock()
 	}()
 
-	screenSize, err := xorg.ChangeScreenSize(screenSize)
+	screenSize, err := manager.backend.SetScreenSize(screenSize)
 	if err == nil {
-		// cache the new screen size
+		// Cache the new screen size
 		manager.screenSize = screenSize
 	}
 
 	return screenSize, err
 }
 
+// GetScreenSize returns the current screen size
 func (manager *DesktopManagerCtx) GetScreenSize() types.ScreenSize {
-	return xorg.GetScreenSize()
+	return manager.backend.GetScreenSize()
 }
 
+// SetKeyboardMap sets the keyboard layout
 func (manager *DesktopManagerCtx) SetKeyboardMap(kbd types.KeyboardMap) error {
-	// TOOD: Use native API.
+	// TODO: Implement in backend for cross-platform support
+	if runtime.GOOS != "linux" {
+		return nil // Not supported on non-Linux
+	}
+
+	// Use setxkbmap command on Linux
 	cmd := exec.Command("setxkbmap", "-layout", kbd.Layout, "-variant", kbd.Variant)
 	_, err := cmd.Output()
 	return err
 }
 
+// GetKeyboardMap returns the current keyboard layout
 func (manager *DesktopManagerCtx) GetKeyboardMap() (*types.KeyboardMap, error) {
-	// TOOD: Use native API.
+	// TODO: Implement in backend for cross-platform support
+	if runtime.GOOS != "linux" {
+		return &types.KeyboardMap{}, nil // Return empty on non-Linux
+	}
+
+	// Use setxkbmap command on Linux
 	cmd := exec.Command("setxkbmap", "-query")
 	res, err := cmd.Output()
 	if err != nil {
@@ -139,64 +170,97 @@ func (manager *DesktopManagerCtx) GetKeyboardMap() (*types.KeyboardMap, error) {
 	return &kbd, nil
 }
 
+// SetKeyboardModifiers sets keyboard modifiers
 func (manager *DesktopManagerCtx) SetKeyboardModifiers(mod types.KeyboardModifiers) {
 	if mod.Shift != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModShift, *mod.Shift)
+		manager.backend.SetKeyboardModifier(desktop.ModShift, *mod.Shift)
 	}
 
 	if mod.CapsLock != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModCapsLock, *mod.CapsLock)
+		manager.backend.SetKeyboardModifier(desktop.ModCapsLock, *mod.CapsLock)
 	}
 
 	if mod.Control != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModControl, *mod.Control)
+		manager.backend.SetKeyboardModifier(desktop.ModControl, *mod.Control)
 	}
 
 	if mod.Alt != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModAlt, *mod.Alt)
+		manager.backend.SetKeyboardModifier(desktop.ModAlt, *mod.Alt)
 	}
 
 	if mod.NumLock != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModNumLock, *mod.NumLock)
+		manager.backend.SetKeyboardModifier(desktop.ModNumLock, *mod.NumLock)
 	}
 
 	if mod.Meta != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModMeta, *mod.Meta)
+		manager.backend.SetKeyboardModifier(desktop.ModMeta, *mod.Meta)
 	}
 
 	if mod.Super != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModSuper, *mod.Super)
+		manager.backend.SetKeyboardModifier(desktop.ModSuper, *mod.Super)
 	}
 
 	if mod.AltGr != nil {
-		xorg.SetKeyboardModifier(xorg.KbdModAltGr, *mod.AltGr)
+		manager.backend.SetKeyboardModifier(desktop.ModAltGr, *mod.AltGr)
 	}
 }
 
+// GetKeyboardModifiers returns the current keyboard modifiers
 func (manager *DesktopManagerCtx) GetKeyboardModifiers() types.KeyboardModifiers {
-	modifiers := xorg.GetKeyboardModifiers()
+	mods := manager.backend.GetKeyboardModifiers()
 
-	isset := func(mod xorg.KbdMod) *bool {
-		x := modifiers&mod != 0
+	isset := func(mod uint8) *bool {
+		x := mods&mod != 0
 		return &x
 	}
 
 	return types.KeyboardModifiers{
-		Shift:    isset(xorg.KbdModShift),
-		CapsLock: isset(xorg.KbdModCapsLock),
-		Control:  isset(xorg.KbdModControl),
-		Alt:      isset(xorg.KbdModAlt),
-		NumLock:  isset(xorg.KbdModNumLock),
-		Meta:     isset(xorg.KbdModMeta),
-		Super:    isset(xorg.KbdModSuper),
-		AltGr:    isset(xorg.KbdModAltGr),
+		Shift:    isset(desktop.ModShift),
+		CapsLock: isset(desktop.ModCapsLock),
+		Control:  isset(desktop.ModControl),
+		Alt:      isset(desktop.ModAlt),
+		NumLock:  isset(desktop.ModNumLock),
+		Meta:     isset(desktop.ModMeta),
+		Super:    isset(desktop.ModSuper),
+		AltGr:    isset(desktop.ModAltGr),
 	}
 }
 
+// GetCursorImage returns the current cursor image
 func (manager *DesktopManagerCtx) GetCursorImage() *types.CursorImage {
-	return xorg.GetCursorImage()
+	switch runtime.GOOS {
+	case "linux":
+		// Use xorg function for Linux
+		return xorg.GetCursorImage()
+	case "darwin":
+		// Use darwin function for macOS
+		return darwin.GetCursorImage()
+	default:
+		return nil
+	}
 }
 
+// GetScreenshotImage captures a screenshot
 func (manager *DesktopManagerCtx) GetScreenshotImage() *image.RGBA {
-	return xorg.GetScreenshotImage()
+	img, err := manager.backend.TakeScreenshot()
+	if err != nil {
+		manager.logger.Err(err).Msg("failed to take screenshot")
+		return nil
+	}
+
+	// Convert to RGBA if needed
+	if rgba, ok := img.(*image.RGBA); ok {
+		return rgba
+	}
+
+	// Convert to RGBA
+	bounds := img.Bounds()
+	rgba := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			rgba.Set(x, y, img.At(x, y))
+		}
+	}
+
+	return rgba
 }
