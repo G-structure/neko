@@ -15,3 +15,12 @@ session:
   cookie:
     # needed for legacy API
     enabled: false
+
+webrtc:
+  # CRITICAL: Set NAT1TO1 to LAN IP so ICE candidates advertise the correct address
+  nat1to1: "192.168.1.67"
+  ice_lite: false
+  ice_trickle: true  # Enable trickle ICE for faster connection establishment
+  ice_servers:
+    - urls:
+      - "stun:stun.l.google.com:19302"
