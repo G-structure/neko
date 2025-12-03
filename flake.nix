@@ -21,11 +21,7 @@
         let
           pkgs = import nixpkgs {
             system = targetSystem;
-            config = {
-              permittedInsecurePackages = [
-                "python-2.7.18.12"  # Required by supervisor
-              ];
-            };
+            config = {};
             overlays = [
               # Use Go 1.24 and libxcvt from unstable
               (final: prev: {
@@ -190,7 +186,7 @@
             syft
         ] ++ (if hostPkgs.stdenv.isLinux then [
             # Build tools (only needed on Linux for native builds)
-            go_1_24 nodejs_20 python2
+            go_1_24 nodejs_20
             pkg-config
             xorg.libX11 xorg.libXrandr xorg.libXtst
             gtk3 gst_all_1.gstreamer gst_all_1.gst-plugins-base

@@ -11,8 +11,7 @@ pkgs.buildEnv {
     # Core utilities (from runtime/Dockerfile:16)
     wget
     cacert
-    python2
-    python3Packages.supervisor
+    python3Packages.supervisor  # Python 3 supervisor (no python2 needed)
 
     # Audio system
     pulseaudio
