@@ -2,145 +2,31 @@ name: Nix Chromium Build
 
 on:
   push:
-    branches:
-      - master
-      - pyagent
-    tags:
-      - 'v*'
-    paths:
-      - 'nix/**'
-      - 'flake.nix'
-      - 'flake.lock'
-      - 'server/**'
-      - 'client/**'
-      - '.github/workflows/nix-chromium.yml'
-  pull_request:
-    branches:
-      - master
-      - pyagent
-    paths:
-      - 'nix/**'
-      - 'flake.nix'
-      - 'flake.lock'
+    branches: [master, pyagent]
   workflow_dispatch:
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/chromium-nix
-
-permissions:
-  contents: read
-  packages: write
-
 jobs:
-  build-and-push:
-    name: Build and Push
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Free disk space
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Build and push
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          df -h
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-        with:
-          logger: pretty
-
-      - name: Setup Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Build Chromium image
-        run: |
-          echo "Building Nix Chromium image..."
-          nix build .#chromium --print-build-logs
-
-      - name: Load image to Docker
-        run: |
-          echo "Loading image into Docker..."
+          # Build
+          nix build .#chromium
           docker load < result
-          docker images
 
-      - name: Extract metadata
-        id: meta
-        run: |
-          # Get the neko-chromium image specifically
-          IMAGE_INFO=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^neko-chromium:" | head -1)
+          # Tag
+          IMAGE=$(echo "ghcr.io/${{ github.repository }}/chromium-nix" | tr '[:upper:]' '[:lower:]')
+          docker tag neko-chromium:2.5.0 $IMAGE:latest
 
-          if [ -z "$IMAGE_INFO" ]; then
-            echo "ERROR: Could not find neko-chromium image"
-            docker images
-            exit 1
-          fi
-
-          echo "Loaded image: $IMAGE_INFO"
-
-          # Determine version tag
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-          elif [[ $GITHUB_REF == refs/heads/master ]]; then
-            VERSION="edge"
-          elif [[ $GITHUB_REF == refs/heads/pyagent ]]; then
-            VERSION="pyagent"
-          else
-            VERSION="${GITHUB_SHA::8}"
-          fi
-
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "source_image=${IMAGE_INFO}" >> $GITHUB_OUTPUT
-
-      - name: Log in to Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Tag and Push image
-        if: github.event_name != 'pull_request'
-        run: |
-          SOURCE_IMAGE="${{ steps.meta.outputs.source_image }}"
-          VERSION="${{ steps.meta.outputs.version }}"
-          # Lowercase the image name - Docker registries require lowercase
-          TARGET_IMAGE=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-
-          echo "Tagging ${SOURCE_IMAGE} as ${TARGET_IMAGE}:${VERSION}"
-          docker tag "${SOURCE_IMAGE}" "${TARGET_IMAGE}:${VERSION}"
-
-          # Also tag as latest if this is a version tag
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            echo "Tagging as latest"
-            docker tag "${SOURCE_IMAGE}" "${TARGET_IMAGE}:latest"
-          fi
-
-          echo "Pushing to registry..."
-          docker push "${TARGET_IMAGE}:${VERSION}"
-
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            docker push "${TARGET_IMAGE}:latest"
-          fi
-
-          echo "Done! Image available at:"
-          echo "  ${TARGET_IMAGE}:${VERSION}"
-
-      - name: Summary
-        run: |
-          TARGET_IMAGE=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Source Image:** ${{ steps.meta.outputs.source_image }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** ${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "- **Registry:** ${TARGET_IMAGE}:${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- **Note:** PR build - not pushed to registry" >> $GITHUB_STEP_SUMMARY
-          fi
+          # Push
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker push $IMAGE:latest
