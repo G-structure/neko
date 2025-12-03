@@ -72,8 +72,15 @@ jobs:
       - name: Extract metadata
         id: meta
         run: |
-          # Get the image name and tag from the loaded image
-          IMAGE_INFO=$(docker images --format "{{.Repository}}:{{.Tag}}" | head -1)
+          # Get the neko-chromium image specifically
+          IMAGE_INFO=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "^neko-chromium:" | head -1)
+
+          if [ -z "$IMAGE_INFO" ]; then
+            echo "ERROR: Could not find neko-chromium image"
+            docker images
+            exit 1
+          fi
+
           echo "Loaded image: $IMAGE_INFO"
 
           # Determine version tag
@@ -103,7 +110,8 @@ jobs:
         run: |
           SOURCE_IMAGE="${{ steps.meta.outputs.source_image }}"
           VERSION="${{ steps.meta.outputs.version }}"
-          TARGET_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          # Lowercase the image name - Docker registries require lowercase
+          TARGET_IMAGE=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
 
           echo "Tagging ${SOURCE_IMAGE} as ${TARGET_IMAGE}:${VERSION}"
           docker tag "${SOURCE_IMAGE}" "${TARGET_IMAGE}:${VERSION}"
@@ -126,12 +134,13 @@ jobs:
 
       - name: Summary
         run: |
+          TARGET_IMAGE=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
           echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Source Image:** ${{ steps.meta.outputs.source_image }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
-            echo "- **Registry:** ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Registry:** ${TARGET_IMAGE}:${{ steps.meta.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           else
             echo "- **Note:** PR build - not pushed to registry" >> $GITHUB_STEP_SUMMARY
           fi
