@@ -209,18 +209,79 @@ XORG_HEADER
     # Copy fontconfig and create fonts.conf that references Nix store
     cp ${../runtime/fontconfig}/* $out/etc/fonts/conf.d/ || true
 
-    # Create a basic fonts.conf that fontconfig can find
+    # Symlink essential font rendering configs from fontconfig package
+    # These enable proper antialiasing, hinting, and subpixel rendering
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/10-hinting-slight.conf $out/etc/fonts/conf.d/
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/10-sub-pixel-rgb.conf $out/etc/fonts/conf.d/
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/10-yes-antialias.conf $out/etc/fonts/conf.d/
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/11-lcdfilter-default.conf $out/etc/fonts/conf.d/
+    # Generic font family mappings
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/45-generic.conf $out/etc/fonts/conf.d/
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/45-latin.conf $out/etc/fonts/conf.d/
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/49-sansserif.conf $out/etc/fonts/conf.d/
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/60-generic.conf $out/etc/fonts/conf.d/
+    ln -sf ${runtimeEnv}/share/fontconfig/conf.avail/60-latin.conf $out/etc/fonts/conf.d/
+
+    # Create fonts.conf with proper font rendering settings
     cat > $out/etc/fonts/fonts.conf << FONTCONF
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
 <fontconfig>
+  <!-- Font directories -->
   <dir>/usr/local/share/fonts</dir>
   <dir>/usr/share/fonts</dir>
   <dir>${runtimeEnv}/share/fonts</dir>
   <dir>~/.fonts</dir>
   <cachedir>/tmp/fontconfig-cache</cachedir>
+
+  <!-- Include config fragments -->
   <include ignore_missing="yes">/etc/fonts/conf.d</include>
   <include ignore_missing="yes">${runtimeEnv}/etc/fonts/conf.d</include>
+
+  <!-- Font rendering settings for crisp, clear fonts -->
+  <match target="font">
+    <edit name="antialias" mode="assign"><bool>true</bool></edit>
+    <edit name="hinting" mode="assign"><bool>true</bool></edit>
+    <edit name="hintstyle" mode="assign"><const>hintslight</const></edit>
+    <edit name="rgba" mode="assign"><const>rgb</const></edit>
+    <edit name="lcdfilter" mode="assign"><const>lcddefault</const></edit>
+    <edit name="autohint" mode="assign"><bool>false</bool></edit>
+  </match>
+
+  <!-- Disable embedded bitmaps in fonts like Calibri -->
+  <match target="font">
+    <edit name="embeddedbitmap" mode="assign"><bool>false</bool></edit>
+  </match>
+
+  <!-- Default sans-serif font -->
+  <alias>
+    <family>sans-serif</family>
+    <prefer>
+      <family>DejaVu Sans</family>
+      <family>Liberation Sans</family>
+      <family>Noto Sans</family>
+    </prefer>
+  </alias>
+
+  <!-- Default serif font -->
+  <alias>
+    <family>serif</family>
+    <prefer>
+      <family>DejaVu Serif</family>
+      <family>Liberation Serif</family>
+      <family>Noto Serif</family>
+    </prefer>
+  </alias>
+
+  <!-- Default monospace font -->
+  <alias>
+    <family>monospace</family>
+    <prefer>
+      <family>DejaVu Sans Mono</family>
+      <family>Liberation Mono</family>
+      <family>Noto Sans Mono</family>
+    </prefer>
+  </alias>
 </fontconfig>
 FONTCONF
 
