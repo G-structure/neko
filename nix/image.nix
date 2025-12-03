@@ -137,8 +137,8 @@ pkgs.dockerTools.buildLayeredImage {
   name = "neko-base";
   tag = version;
 
-  # Maximum number of layers for optimal caching (modern Docker supports up to 128)
-  maxLayers = 128;
+  # Maximum number of layers for optimal caching (reduced to avoid max depth errors)
+  maxLayers = 100;
 
   # Layer contents - Nix will automatically optimize layer distribution
   # based on dependency popularity for better cache hits

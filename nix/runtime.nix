@@ -36,6 +36,7 @@ pkgs.buildEnv {
     curl
     xdotool
     xclip
+    xorg.setxkbmap  # Required by neko server for keyboard layout
     gtk3
 
     # GStreamer for video encoding (from runtime/Dockerfile:27-29)
@@ -73,6 +74,7 @@ pkgs.buildEnv {
     bash
     shadow  # for user management
     util-linux
+    fontconfig  # Font configuration and rendering
   ];
 
   pathsToLink = [
