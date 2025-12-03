@@ -50,7 +50,7 @@ pkgs.buildEnv {
 
     # Fonts (from runtime/Dockerfile:59-72)
     # Emoji fonts
-    noto-fonts-emoji
+    noto-fonts-color-emoji
 
     # Chinese fonts
     wqy_zenhei
@@ -67,7 +67,6 @@ pkgs.buildEnv {
     liberation_ttf
     noto-fonts
     noto-fonts-cjk-sans
-    noto-fonts-extra
 
     # System utilities
     coreutils

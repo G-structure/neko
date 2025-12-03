@@ -24,8 +24,8 @@ pkgs.buildNpmPackage rec {
   # Set SOURCE_DATE_EPOCH for reproducible timestamps
   inherit SOURCE_DATE_EPOCH;
 
-  # Node.js version should match Dockerfile (node:18-bullseye-slim)
-  nodejs = pkgs.nodejs_18;
+  # Node.js 20 (18 removed in nixos-25.11)
+  nodejs = pkgs.nodejs_20;
 
   # Use npm ci for more reproducible builds (respects package-lock.json exactly)
   npmBuildScript = "build";

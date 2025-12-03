@@ -55,7 +55,7 @@
   ];
 
   # Enable CGO for C bindings
-  CGO_ENABLED = "1";
+  env.CGO_ENABLED = "1";
 
   # Set SOURCE_DATE_EPOCH for reproducibility
   inherit SOURCE_DATE_EPOCH;
