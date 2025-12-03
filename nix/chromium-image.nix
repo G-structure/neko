@@ -18,6 +18,39 @@ let
     USER_UID=1000
     USER_GID=1000
 
+    # Initialize /etc/passwd and /etc/group if they're symlinks to read-only nix store
+    # This is needed because fakeNss creates read-only symlinks but we need writable files
+    if [ -L /etc/passwd ] || [ ! -w /etc/passwd ]; then
+      # Copy content from symlink target or create fresh
+      if [ -L /etc/passwd ]; then
+        cp --remove-destination "$(readlink /etc/passwd)" /etc/passwd 2>/dev/null || true
+      fi
+      # Ensure we have at least root and nobody
+      if [ ! -f /etc/passwd ] || [ ! -s /etc/passwd ]; then
+        echo "root:x:0:0:root:/root:/bin/bash" > /etc/passwd
+        echo "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin" >> /etc/passwd
+      fi
+      chmod 644 /etc/passwd
+    fi
+
+    if [ -L /etc/group ] || [ ! -w /etc/group ]; then
+      if [ -L /etc/group ]; then
+        cp --remove-destination "$(readlink /etc/group)" /etc/group 2>/dev/null || true
+      fi
+      if [ ! -f /etc/group ] || [ ! -s /etc/group ]; then
+        echo "root:x:0:" > /etc/group
+        echo "nobody:x:65534:" >> /etc/group
+      fi
+      chmod 644 /etc/group
+    fi
+
+    # Initialize /etc/shadow if needed
+    if [ ! -f /etc/shadow ]; then
+      echo "root:*:19000:0:99999:7:::" > /etc/shadow
+      echo "nobody:*:19000:0:99999:7:::" >> /etc/shadow
+      chmod 640 /etc/shadow
+    fi
+
     # Create system groups first (audio, video, pulse) - only if they don't exist
     getent group audio >/dev/null 2>&1 || groupadd -r audio
     getent group video >/dev/null 2>&1 || groupadd -r video
@@ -35,6 +68,13 @@ let
 
     # Create necessary runtime directories
     mkdir -p /var/run /var/log /var/lock /run
+
+    # Create dbus runtime directories (required for system bus)
+    # Note: dbus uses /run/dbus, which may be different from /var/run/dbus
+    mkdir -p /run/dbus /var/run/dbus
+    rm -f /run/dbus/pid /var/run/dbus/pid 2>/dev/null || true
+    # Create symlink if they're different paths
+    ln -sf /run/dbus/system_bus_socket /var/run/dbus/system_bus_socket 2>/dev/null || true
 
     # Create /tmp with proper permissions - must be world-writable with sticky bit for X server lock files
     mkdir -p /tmp
@@ -78,9 +118,70 @@ let
     # Copy supervisord configs and remove unsupported directives for nix supervisord
     sed -e '/^chown=/d' -e '/^user=root/d' ${../runtime/supervisord.conf} > $out/etc/neko/supervisord.conf
 
-    # Note: DBus is disabled for now - it requires complex user/group setup in Nix containers
-    # PulseAudio will log warnings but still function without it
+    # DBus support - create custom config and wrapper script for container use
     mkdir -p $out/etc/neko/supervisord
+    mkdir -p $out/usr/share/dbus-1
+    mkdir -p $out/etc/dbus-1
+
+    # Create a minimal container-friendly dbus system config
+    # This config runs as root (no messagebus user needed) and uses /run/dbus
+    cat > $out/usr/share/dbus-1/system-container.conf << 'DBUS_CONF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <!-- System bus type for inter-process communication -->
+  <type>system</type>
+
+  <!-- Run as root in container (no messagebus user needed) -->
+  <!-- Note: This is safe in a container where root is isolated -->
+
+  <!-- Don't fork, supervisord manages the process -->
+  <!-- <fork/> -->
+
+  <!-- Write pid file -->
+  <pidfile>/run/dbus/pid</pidfile>
+
+  <!-- Only allow socket-credentials-based authentication -->
+  <auth>EXTERNAL</auth>
+
+  <!-- Listen on Unix socket -->
+  <listen>unix:path=/run/dbus/system_bus_socket</listen>
+
+  <!-- Default policy: allow all connections and message sending -->
+  <!-- This is permissive for container use where isolation is provided by Docker -->
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_type="method_call"/>
+    <allow send_type="signal"/>
+    <allow send_type="method_return"/>
+    <allow send_type="error"/>
+    <allow receive_type="method_call"/>
+    <allow receive_type="signal"/>
+    <allow receive_type="method_return"/>
+    <allow receive_type="error"/>
+  </policy>
+</busconfig>
+DBUS_CONF
+
+    # Create the dbus wrapper script that supervisord will run
+    cat > $out/usr/bin/dbus << 'DBUS_SCRIPT'
+#!/bin/sh
+
+# Ensure dbus runtime directory exists
+mkdir -p /run/dbus
+
+# Clean up stale pid file
+rm -f /run/dbus/pid 2>/dev/null
+
+# Run dbus-daemon with container-friendly config
+exec /usr/bin/dbus-daemon --nofork --print-pid --config-file=/usr/share/dbus-1/system-container.conf
+DBUS_SCRIPT
+    chmod +x $out/usr/bin/dbus
+
+    # Copy the dbus supervisord config (runs dbus with priority 100)
+    # Remove user=root directive as Nix supervisord doesn't support it
+    sed -e '/^user=root/d' ${../runtime/supervisord.dbus.conf} > $out/etc/neko/supervisord/dbus.conf
 
     # Copy xorg config and add ModulePath for Nix modules and custom drivers
     # X server needs to find both the Nix xorg modules and our custom dummy/neko drivers
@@ -96,7 +197,8 @@ XORG_HEADER
     # Copy pulseaudio config to user directory (to avoid collision with system pulse)
     cp ${../runtime/default.pa} $out/home/neko/.config/pulse/default.pa
 
-    # Note: DBus wrapper removed - DBus is disabled in this Nix build
+    # Symlink dbus session config from Nix store (system.conf is replaced by our container config above)
+    ln -sf ${runtimeEnv}/share/dbus-1/session.conf $out/usr/share/dbus-1/session.conf
 
     # Copy Xresources
     cp ${../runtime/.Xresources} $out/home/neko/.Xresources
@@ -232,6 +334,9 @@ pkgs.dockerTools.buildLayeredImage {
   # Layer contents - Nix will automatically optimize layer distribution
   # based on dependency popularity for better cache hits
   contents = [
+    # Fake NSS for /etc/passwd and /etc/group (required by dbus and other services)
+    pkgs.dockerTools.fakeNss
+
     # Runtime environment (base system, X11, audio, video, fonts)
     runtimeEnv
 
@@ -281,6 +386,8 @@ pkgs.dockerTools.buildLayeredImage {
       "XDG_DATA_DIRS=${runtimeEnv}/share:${chromiumEnv}/share:/usr/share"
       # Fontconfig path for font rendering
       "FONTCONFIG_PATH=${runtimeEnv}/etc/fonts"
+      # DBus system bus address for inter-process communication
+      "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket"
     ];
 
     # Exposed ports
