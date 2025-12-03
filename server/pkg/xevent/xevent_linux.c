@@ -1,4 +1,4 @@
-#include "xevent.h"
+#include "xevent_linux.h"
 
 static int XEventError(Display *display, XErrorEvent *event) {
   char message[100];

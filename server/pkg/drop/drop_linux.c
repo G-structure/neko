@@ -1,4 +1,4 @@
-#include "drop.h"
+#include "drop_linux.h"
 
 GtkWidget *drag_widget = NULL;
 

@@ -1,4 +1,4 @@
-#include "xorg.h"
+#include "xorg_linux.h"
 
 static Display *DISPLAY = NULL;
 

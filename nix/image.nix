@@ -37,8 +37,11 @@ let
     # Add user to system groups
     usermod -aG audio,video,pulse $USERNAME 2>/dev/null || true
 
-    # Create necessary runtime directories
+    # Create necessary runtime directories with proper permissions
     mkdir -p /var/run /var/log /var/lock
+    mkdir -p /tmp /var/tmp
+    chmod 1777 /tmp /var/tmp
+
     mkdir -p /tmp/.X11-unix
     chmod 1777 /tmp/.X11-unix
     chown $USERNAME:$USERNAME /tmp/.X11-unix/ || true
@@ -64,8 +67,9 @@ let
     mkdir -p $out/home/neko/.config/pulse
     mkdir -p $out/usr/bin
 
-    # Copy supervisord configs
-    cp ${../runtime/supervisord.conf} $out/etc/neko/supervisord.conf
+    # Copy supervisord configs and remove unsupported directives for nix supervisord
+    sed -e '/^chown=/d' -e '/^user=root/d' ${../runtime/supervisord.conf} > $out/etc/neko/supervisord.conf
+
     cp ${../runtime/supervisord.dbus.conf} $out/etc/neko/supervisord.dbus.conf
 
     # Copy xorg config
@@ -94,13 +98,17 @@ let
     cp ${../config.yml} $out/etc/neko/neko.yaml
   '';
 
-  # Add server binary and plugins
+  # Add server binary and plugins + create symlinks to Nix store binaries
   serverInstall = pkgs.runCommand "neko-server-install" {} ''
     mkdir -p $out/usr/bin
     mkdir -p $out/etc/neko/plugins
 
     cp ${nekoServer}/bin/neko $out/usr/bin/neko
     chmod +x $out/usr/bin/neko
+
+    # Create symlinks for X server and pulseaudio from runtime environment
+    ln -s ${runtimeEnv}/bin/X $out/usr/bin/X || ln -s ${runtimeEnv}/bin/Xorg $out/usr/bin/X || true
+    ln -s ${runtimeEnv}/bin/pulseaudio $out/usr/bin/pulseaudio || true
 
     # Copy plugins if they exist
     if [ -d ${nekoServer}/plugins ]; then

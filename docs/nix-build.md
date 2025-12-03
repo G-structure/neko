@@ -1,5 +1,13 @@
 # Nix Build Guide
 
+> **⚠️ STATUS: WORK IN PROGRESS**
+>
+> The Nix build system successfully compiles and packages Neko into Docker images, but the runtime environment is not yet fully functional. Images build successfully but containers fail to start due to path mismatches between Nix's `/nix/store/` layout and the application's FHS expectations.
+>
+> **See [nix-build-status.md](./nix-build-status.md) for current status, known issues, and fixes applied.**
+>
+> This guide documents the intended workflow. For production use, continue using traditional Dockerfiles.
+
 This document explains how to build Neko using Nix for deterministic, reproducible builds.
 
 ## Prerequisites

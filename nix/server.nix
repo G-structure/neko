@@ -19,11 +19,13 @@
       let baseName = baseNameOf path;
       in !(lib.hasSuffix ".md" baseName) &&
          baseName != "Dockerfile" &&
-         baseName != "Dockerfile.bookworm";
+         baseName != "Dockerfile.bookworm" &&
+         baseName != "vendor";  # Exclude vendor directory - Nix will fetch deps
   };
 
-  # Vendor hash - computed from go.mod and go.sum
-  vendorHash = "sha256-9S8CECD7HyDvJmQ7AVPrlnpT0L2DpoNps3/VE/B25Vo=";
+  # Use go mod download instead of vendoring
+  proxyVendor = true;
+  vendorHash = "sha256-NP5A+h8/ENdliyR+THo6FwnTWRH0JK0b9PmPFROeMik=";
 
   # Build dependencies (native tools for build platform)
   nativeBuildInputs = with buildPkgs; [
