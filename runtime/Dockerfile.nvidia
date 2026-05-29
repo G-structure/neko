@@ -32,8 +32,9 @@ RUN set -eux; \
         libssl-dev \
         libx264-dev \
         libvpx-dev; \
-    # Install meson
-    pip3 install meson; \
+    # Install meson (pin <1.11: meson 1.11.x crashes on Python 3.8 with
+    # "KeyError: 'libxml2'" while configuring the gstreamer 1.20 subprojects)
+    pip3 install 'meson<1.11'; \
     #
     # clean up
     apt-get clean -y; \
