@@ -399,6 +399,7 @@ PreInit(__attribute__ ((unused)) InputDriverPtr drv,
     if (ret == -1)
     {
         xf86IDrvMsg(pInfo, X_ERROR, "unable to bind socket\n");
+        close(priv->listen_socket);
         return BadValue;
     }
 
@@ -429,6 +430,8 @@ PreInit(__attribute__ ((unused)) InputDriverPtr drv,
     if (ret == -1)
     {
         xf86IDrvMsg(pInfo, X_ERROR, "unable to listen on socket\n");
+        close(priv->listen_socket);
+        unlink(priv->socket_name);
         return BadValue;
     }
 
