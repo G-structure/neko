@@ -48,6 +48,26 @@ var debounce_button = make(map[uint32]time.Time)
 var debounce_key = make(map[uint32]time.Time)
 var mu = sync.Mutex{}
 
+func screenModeAlreadyActive(
+	requested types.ScreenSize,
+	currentWidth int,
+	currentHeight int,
+	currentRate int16,
+) bool {
+	if requested.Width != currentWidth || requested.Height != currentHeight {
+		return false
+	}
+	if requested.Rate <= 0 || currentRate <= 0 {
+		return false
+	}
+
+	delta := int(requested.Rate) - int(currentRate)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= 1
+}
+
 func GetScreenConfigurations() {
 	mu.Lock()
 	defer mu.Unlock()
@@ -209,6 +229,21 @@ func ChangeScreenSize(s types.ScreenSize) (types.ScreenSize, error) {
 	// if rate is 0, set it to 60
 	if s.Rate == 0 {
 		s.Rate = 60
+	}
+
+	// NVIDIA's proprietary driver can expose opaque MetaMode IDs through the
+	// legacy RandR rate API even while modern RandR reports the physical refresh
+	// rate. Avoid feeding semantic Hz back into that ID field when the requested
+	// physical mode is already active.
+	currentWidth, currentHeight, currentRate := C.int(0), C.int(0), C.short(0)
+	C.XGetScreenConfiguration(&currentWidth, &currentHeight, &currentRate)
+	if screenModeAlreadyActive(
+		s,
+		int(currentWidth),
+		int(currentHeight),
+		int16(currentRate),
+	) {
+		return s, nil
 	}
 
 	// convert variables to C types
