@@ -61,8 +61,8 @@ log "Build 1 - NAR size: $NAR_SIZE1 bytes"
 log "Cleaning previous build..."
 nix store delete "$BUILD1_PATH" 2>/dev/null || warn "Could not delete first build (may be in use)"
 
-log "Rebuilding image (second build with --check)..."
-nix build .#image --rebuild --check --no-link --print-out-paths > /tmp/neko-build2-path.txt
+log "Rebuilding image for comparison..."
+nix build .#image --rebuild --no-link --print-out-paths > /tmp/neko-build2-path.txt
 BUILD2_PATH=$(cat /tmp/neko-build2-path.txt)
 
 log "Second build output: $BUILD2_PATH"

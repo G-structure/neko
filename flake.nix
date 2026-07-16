@@ -244,7 +244,10 @@
               nix build .#image
 
               echo "Rebuilding to verify reproducibility..."
-              nix build .#image --check --rebuild
+              # `nix build --rebuild` rebuilds an existing output and compares
+              # it with the registered store path. The new CLI has no separate
+              # `--check` flag (that flag belongs to the legacy `nix-build`).
+              nix build .#image --rebuild
 
               echo "✅ Build is reproducible!"
 
