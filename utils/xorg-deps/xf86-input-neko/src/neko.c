@@ -39,8 +39,10 @@
 #define DEF_SOCKET_NAME "/tmp/xf86-input-neko.sock"
 #define BUFFER_SIZE 12
 
+#include <errno.h>
 #include <stdio.h>
-#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <misc.h>
@@ -397,6 +399,23 @@ PreInit(__attribute__ ((unused)) InputDriverPtr drv,
     if (ret == -1)
     {
         xf86IDrvMsg(pInfo, X_ERROR, "unable to bind socket\n");
+        return BadValue;
+    }
+
+    /*
+     * Xorg normalizes its umask before loading input drivers, so callers
+     * cannot make this socket group-connectable with a wrapper umask. Keep
+     * access private to the Xorg owner and primary group; deployments that
+     * separate Xorg and Neko should run Xorg with Neko's primary group.
+     */
+    ret = chmod(priv->socket_name, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+    if (ret == -1)
+    {
+        xf86IDrvMsg(pInfo, X_ERROR,
+                    "unable to set socket permissions for %s: %s\n",
+                    priv->socket_name, strerror(errno));
+        close(priv->listen_socket);
+        unlink(priv->socket_name);
         return BadValue;
     }
 

@@ -6,9 +6,44 @@ on:
       - master
     paths:
       - server/**
+      - utils/xorg-deps/xf86-input-neko/**
       - .github/workflows/server_test.yml
 
 jobs:
+  runtime-contract:
+    name: Test Xorg runtime contract
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Install Xorg build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev \
+            libxfixes-dev \
+            libxcvt-dev \
+            libxrandr-dev \
+            libxtst-dev
+
+      - name: Test physical refresh policy
+        working-directory: server
+        run: go test ./pkg/xorg
+
+      - name: Build Neko Xorg input driver
+        uses: docker/build-push-action@v6
+        with:
+          context: utils/xorg-deps/xf86-input-neko
+          platforms: linux/amd64
+
   build-amd64:
     name: Build amd64
     runs-on: ubuntu-latest

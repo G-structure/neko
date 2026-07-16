@@ -233,6 +233,9 @@ Status XSetScreenConfiguration(int width, int height, short rate) {
   Display *display = getXDisplay();
   Window root = DefaultRootWindow(display);
   XRRScreenConfiguration *conf = XRRGetScreenInfo(display, root);
+  if (conf == NULL) {
+    return RRSetConfigFailed;
+  }
 
   XRRScreenSize *xrrs;
   int num_sizes;
@@ -248,6 +251,7 @@ Status XSetScreenConfiguration(int width, int height, short rate) {
 
   // if we cannot find the size
   if (size_index == -1) {
+    XRRFreeScreenConfigInfo(conf);
     return RRSetConfigFailed;
   }
 
@@ -258,10 +262,67 @@ Status XSetScreenConfiguration(int width, int height, short rate) {
   return status;
 }
 
+static short XGetModeRefresh(const XRRModeInfo *mode) {
+  if (mode == NULL || mode->dotClock == 0 || mode->hTotal == 0 ||
+      mode->vTotal == 0) {
+    return 0;
+  }
+
+  double vtotal = mode->vTotal;
+  if (mode->modeFlags & RR_DoubleScan) {
+    vtotal *= 2.0;
+  }
+  if (mode->modeFlags & RR_Interlace) {
+    vtotal /= 2.0;
+  }
+
+  double refresh = (double) mode->dotClock / ((double) mode->hTotal * vtotal);
+  return (short) (refresh + 0.5);
+}
+
+static short XGetActiveModeRefresh(Display *display, Window root,
+                                   int current_resources) {
+  XRRScreenResources *resources = current_resources
+    ? XRRGetScreenResourcesCurrent(display, root)
+    : XRRGetScreenResources(display, root);
+  if (resources == NULL) {
+    return 0;
+  }
+
+  RRMode active_mode = None;
+  int active_crtcs = 0;
+  for (int i = 0; i < resources->ncrtc; i++) {
+    XRRCrtcInfo *crtc = XRRGetCrtcInfo(display, resources, resources->crtcs[i]);
+    if (crtc != NULL && crtc->mode != None) {
+      active_mode = crtc->mode;
+      active_crtcs++;
+    }
+    if (crtc != NULL) {
+      XRRFreeCrtcInfo(crtc);
+    }
+  }
+
+  short refresh = 0;
+  if (active_crtcs == 1) {
+    for (int i = 0; i < resources->nmode; i++) {
+      if (resources->modes[i].id == active_mode) {
+        refresh = XGetModeRefresh(&resources->modes[i]);
+        break;
+      }
+    }
+  }
+
+  XRRFreeScreenResources(resources);
+  return refresh;
+}
+
 void XGetScreenConfiguration(int *width, int *height, short *rate) {
   Display *display = getXDisplay();
   Window root = DefaultRootWindow(display);
   XRRScreenConfiguration *conf = XRRGetScreenInfo(display, root);
+  if (conf == NULL) {
+    return;
+  }
 
   Rotation current_rotation;
   SizeID current_size_id = XRRConfigCurrentConfiguration(conf, &current_rotation);
@@ -271,7 +332,8 @@ void XGetScreenConfiguration(int *width, int *height, short *rate) {
   xrrs = XRRConfigSizes(conf, &num_sizes);
 
   // if we cannot find the size
-  if (current_size_id >= num_sizes) {
+  if (current_size_id < 0 || current_size_id >= num_sizes) {
+    XRRFreeScreenConfigInfo(conf);
     return;
   }
 
@@ -280,6 +342,20 @@ void XGetScreenConfiguration(int *width, int *height, short *rate) {
   *rate = XRRConfigCurrentRate(conf);
 
   XRRFreeScreenConfigInfo(conf);
+
+  /*
+   * NVIDIA's proprietary driver exposes opaque MetaMode IDs through the
+   * legacy RandR 1.1 rate API (for example 50 for a physical 60 Hz mode).
+   * Resolve the active mode through modern RandR resources so callers receive
+   * the physical refresh rate instead of a driver-private identifier.
+   */
+  short physical_rate = XGetActiveModeRefresh(display, root, 1);
+  if (physical_rate == 0) {
+    physical_rate = XGetActiveModeRefresh(display, root, 0);
+  }
+  if (physical_rate > 0) {
+    *rate = physical_rate;
+  }
 }
 
 void XGetScreenConfigurations() {
