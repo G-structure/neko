@@ -16,6 +16,7 @@ RUN set -eux; \
     ./autogen.sh --prefix=/usr; \
     ./configure; \
     make -j$(nproc); \
+    make check; \
     make install;
 
 # docker build -t xf86-input-neko .

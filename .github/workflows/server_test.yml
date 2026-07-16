@@ -40,6 +40,16 @@ jobs:
         working-directory: server
         run: go test ./pkg/xorg
 
+      - name: Test physical refresh timing
+        working-directory: server
+        run: |
+          cc -std=c99 -Wall -Wextra -Werror \
+            -Ipkg/xorg \
+            pkg/xorg/c_tests/xorg_mode_test.c \
+            pkg/xorg/xorg_mode.c \
+            -o /tmp/xorg-mode-test
+          /tmp/xorg-mode-test
+
       - name: Build Neko Xorg input driver
         uses: docker/build-push-action@v6
         with:

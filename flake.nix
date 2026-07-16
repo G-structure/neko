@@ -252,7 +252,8 @@
               echo "✅ Build is reproducible!"
 
               # Show NAR hash
-              nix path-info --json .#image | ${hostPkgs.jq}/bin/jq '.[0] | {narHash, narSize}'
+              nix path-info --json .#image | ${hostPkgs.jq}/bin/jq \
+                'first(.. | objects | select(has("narHash") and has("narSize"))) | {narHash, narSize}'
           '');
         };
 

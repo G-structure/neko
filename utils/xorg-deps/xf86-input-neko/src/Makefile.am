@@ -28,4 +28,8 @@
 @DRIVER_NAME@_drv_la_LDFLAGS = -module -avoid-version
 @DRIVER_NAME@_drv_ladir = @inputdir@
 
-@DRIVER_NAME@_drv_la_SOURCES = @DRIVER_NAME@.c
+@DRIVER_NAME@_drv_la_SOURCES = @DRIVER_NAME@.c socket_security.c socket_security.h
+
+check_PROGRAMS = socket_security_test
+TESTS = $(check_PROGRAMS)
+socket_security_test_SOURCES = socket_security_test.c socket_security.h

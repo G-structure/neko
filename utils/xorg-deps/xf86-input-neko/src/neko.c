@@ -32,6 +32,8 @@
 /* neko input driver */
 // https://www.x.org/releases/X11R7.7/doc/xorg-server/Xinput.html
 
+#include "socket_security.h"
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -42,7 +44,6 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <misc.h>
@@ -409,14 +410,12 @@ PreInit(__attribute__ ((unused)) InputDriverPtr drv,
      * access private to the Xorg owner and primary group; deployments that
      * separate Xorg and Neko should run Xorg with Neko's primary group.
      */
-    ret = chmod(priv->socket_name, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+    ret = neko_secure_bound_socket(&priv->listen_socket, priv->socket_name);
     if (ret == -1)
     {
         xf86IDrvMsg(pInfo, X_ERROR,
                     "unable to set socket permissions for %s: %s\n",
                     priv->socket_name, strerror(errno));
-        close(priv->listen_socket);
-        unlink(priv->socket_name);
         return BadValue;
     }
 
