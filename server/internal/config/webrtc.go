@@ -52,6 +52,11 @@ type WebRTC struct {
 	NAT1To1IPs     []string
 	IpRetrievalUrl string
 
+	// RobotBridgeURL is the in-container robot bridge HTTP endpoint that OP_ROBOT
+	// data-channel commands are POSTed to (e.g. http://127.0.0.1:8770/robot/control).
+	// Empty disables OP_ROBOT routing (frames are dropped, never sent to X11).
+	RobotBridgeURL string
+
 	Estimator WebRTCEstimator
 }
 
@@ -104,6 +109,11 @@ func (WebRTC) Init(cmd *cobra.Command) error {
 
 	cmd.PersistentFlags().String("webrtc.ip_retrieval_url", "https://checkip.amazonaws.com", "URL address used for retrieval of the external IP address")
 	if err := viper.BindPFlag("webrtc.ip_retrieval_url", cmd.PersistentFlags().Lookup("webrtc.ip_retrieval_url")); err != nil {
+		return err
+	}
+
+	cmd.PersistentFlags().String("webrtc.robot_bridge_url", "", "in-container robot bridge HTTP endpoint for OP_ROBOT data-channel commands (empty disables routing)")
+	if err := viper.BindPFlag("webrtc.robot_bridge_url", cmd.PersistentFlags().Lookup("webrtc.robot_bridge_url")); err != nil {
 		return err
 	}
 
@@ -301,6 +311,8 @@ func (s *WebRTC) Set() {
 			log.Warn().Err(err).Msgf("IP retrieval failed")
 		}
 	}
+
+	s.RobotBridgeURL = viper.GetString("webrtc.robot_bridge_url")
 
 	// bandwidth estimator
 
